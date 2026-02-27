@@ -16,12 +16,8 @@ public class GridInventoryRuntime : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
-			"AssetRegistry"
-		});
-
-		PrivateDependencyModuleNames.AddRange(new string[]
-		{
-			"AssetRegistry"
+			"AssetRegistry",
+			"Json"
 		});
 	}
 }

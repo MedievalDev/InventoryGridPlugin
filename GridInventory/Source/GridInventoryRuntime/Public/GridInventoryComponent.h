@@ -10,6 +10,7 @@
 #include "GridInventoryComponent.generated.h"
 
 class UItemContainerInventory;
+class URuntimeItemDefinition;
 struct FItemSaveEntry;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInventoryItemAdded, const FInventoryItemInstance&, Item);
@@ -262,6 +263,32 @@ public:
 	const FInventoryGrid& GetGrid() const { return Grid; }
 
 	// ========================
+	// Runtime Item Creation
+	// ========================
+
+	/**
+	 * Create a runtime item definition (e.g. a brewed potion).
+	 * The definition is stored in this component's RuntimeDefinitions array
+	 * to prevent garbage collection. Use the returned pointer like any ItemDef.
+	 *
+	 * @param ItemID Unique ID string (e.g. "BrauterTrank_001")
+	 * @param DisplayName Display name
+	 * @param Effects Base effect values
+	 * @param SourceIngredients Names of ingredients used
+	 * @return The new definition, or nullptr on failure
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Runtime")
+	URuntimeItemDefinition* CreateRuntimeItem(
+		FName ItemID,
+		FText DisplayName,
+		const TArray<FItemEffectValue>& Effects,
+		const TArray<FName>& SourceIngredients);
+
+	/** Get all runtime definitions held by this component (GC roots) */
+	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Runtime")
+	const TArray<URuntimeItemDefinition*>& GetRuntimeDefinitions() const { return RuntimeDefinitions; }
+
+	// ========================
 	// Save / Load
 	// ========================
 
@@ -338,6 +365,10 @@ private:
 
 	UPROPERTY(ReplicatedUsing = OnRep_Items)
 	TArray<FInventoryItemInstance> Items;
+
+	/** GC-safe storage for runtime-created item definitions */
+	UPROPERTY()
+	TArray<URuntimeItemDefinition*> RuntimeDefinitions;
 
 	float CachedWeight;
 

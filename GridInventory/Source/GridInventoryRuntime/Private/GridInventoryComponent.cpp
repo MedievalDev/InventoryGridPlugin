@@ -5,6 +5,7 @@
 #include "InventorySaveGame.h"
 #include "EquipmentComponent.h"
 #include "InventoryContainer.h"
+#include "RuntimeItemDefinition.h"
 #include "Net/UnrealNetwork.h"
 #include "Kismet/GameplayStatics.h"
 
@@ -639,6 +640,7 @@ void UGridInventoryComponent::ClearInventory()
 	for (const FInventoryItemInstance& Item : Items) BroadcastItemRemoved(Item);
 	Items.Empty();
 	Grid.Clear();
+	RuntimeDefinitions.Empty();
 	CachedWeight = 0.0f;
 	BroadcastChanged();
 }
@@ -677,6 +679,41 @@ void UGridInventoryComponent::ServerTransferItem_Implementation(FGuid UniqueID, 
 void UGridInventoryComponent::OnRep_Items() { RebuildGridFromItems(); BroadcastChanged(); }
 
 // ============================================================================
+// Runtime Item Creation
+// ============================================================================
+
+URuntimeItemDefinition* UGridInventoryComponent::CreateRuntimeItem(
+	FName ItemID,
+	FText DisplayName,
+	const TArray<FItemEffectValue>& Effects,
+	const TArray<FName>& SourceIngredients)
+{
+	URuntimeItemDefinition* Def = NewObject<URuntimeItemDefinition>(this);
+	Def->ItemID = ItemID;
+	Def->DisplayName = DisplayName;
+	Def->BaseEffects = Effects;
+	Def->SourceIngredients = SourceIngredients;
+
+	// Sensible defaults for potions
+	Def->ItemType = FName(TEXT("Potion"));
+	Def->GridSize = FIntPoint(1, 1);
+	Def->bCanRotate = false;
+	Def->bCanStack = true;
+	Def->MaxStackSize = 10;
+	Def->Weight = 0.5f;
+	Def->bIsConsumable = true;
+	Def->bDestroyOnConsume = true;
+
+	// GC-safe: store reference so the definition won't be collected
+	RuntimeDefinitions.Add(Def);
+
+	UE_LOG(LogTemp, Log, TEXT("[GridInventory] Created runtime item '%s' with %d effects"),
+		*ItemID.ToString(), Effects.Num());
+
+	return Def;
+}
+
+// ============================================================================
 // Save / Load
 // ============================================================================
 
@@ -691,9 +728,17 @@ FItemSaveEntry UGridInventoryComponent::CreateSaveEntry(const FInventoryItemInst
 
 	if (Item.ItemDef)
 	{
-		Entry.ItemDefPath = FSoftObjectPath(Item.ItemDef);
-		Entry.bIsRuntimeCreated = false;
-		// TODO: detect URuntimeItemDefinition and serialize as JSON
+		URuntimeItemDefinition* RuntimeDef = Cast<URuntimeItemDefinition>(Item.ItemDef);
+		if (RuntimeDef)
+		{
+			Entry.bIsRuntimeCreated = true;
+			Entry.RuntimeItemJSON = RuntimeDef->ToJSON();
+		}
+		else
+		{
+			Entry.ItemDefPath = FSoftObjectPath(Item.ItemDef);
+			Entry.bIsRuntimeCreated = false;
+		}
 	}
 
 	Entry.GridPosition = Item.GridPosition;
@@ -731,9 +776,14 @@ bool UGridInventoryComponent::RestoreItemFromEntry(const FItemSaveEntry& Entry)
 	}
 	else
 	{
-		// TODO: Create URuntimeItemDefinition from RuntimeItemJSON
-		UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SaveLoad: Runtime items not yet supported"));
-		return false;
+		URuntimeItemDefinition* RuntimeDef = URuntimeItemDefinition::FromJSON(this, Entry.RuntimeItemJSON);
+		if (!RuntimeDef)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SaveLoad: Failed to parse runtime item JSON"));
+			return false;
+		}
+		RuntimeDefinitions.Add(RuntimeDef);
+		ItemDef = RuntimeDef;
 	}
 
 	// Create the item instance with the SAVED UniqueID (not a new one)
