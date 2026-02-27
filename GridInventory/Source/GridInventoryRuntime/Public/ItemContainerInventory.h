@@ -155,9 +155,24 @@ private:
 
 	float CachedWeight;
 
+	/** O(1) lookup: UniqueID → index in Items array */
+	TMap<FGuid, int32> ItemIndexMap;
+
 	void RecalculateWeight();
 	bool CanAffordWeight(float Additional) const;
+
+	/** O(1) item lookup via ItemIndexMap */
 	int32 FindItemIndex(const FGuid& UniqueID) const;
+
+	/**
+	 * Swap-remove an item at the given array index.
+	 * O(1) — swaps last element into removed position and updates ItemIndexMap.
+	 */
+	void SwapRemoveItemAtIndex(int32 Index);
+
+	/** Rebuild ItemIndexMap from Items array */
+	void RebuildItemIndexMap();
+
 	int32 TryStackOntoExisting(UInventoryItemDefinition* ItemDef, int32 Count);
 	bool Internal_AddItemAt(UInventoryItemDefinition* ItemDef, FIntPoint Position, bool bRotated, int32 Count);
 	bool Internal_RemoveItem(const FGuid& UniqueID, int32 Count);

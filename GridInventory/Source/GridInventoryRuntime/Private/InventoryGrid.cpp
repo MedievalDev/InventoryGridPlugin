@@ -211,6 +211,35 @@ bool FInventoryGrid::RemoveItem(const FGuid& ItemID)
 	return bFound;
 }
 
+bool FInventoryGrid::RemoveItemAt(const FGuid& ItemID, FIntPoint Position, FIntPoint ItemSize)
+{
+	if (!ItemID.IsValid()) return false;
+	if (!IsAreaInBounds(Position, ItemSize)) return false;
+
+	int32 Removed = 0;
+	for (int32 Y = Position.Y; Y < Position.Y + ItemSize.Y; ++Y)
+	{
+		for (int32 X = Position.X; X < Position.X + ItemSize.X; ++X)
+		{
+			const int32 Idx = Y * Width + X;
+			if (Cells[Idx] == ItemID)
+			{
+				Cells[Idx].Invalidate();
+				ClearBit(Idx);
+				++Removed;
+			}
+		}
+	}
+
+	if (Removed > 0)
+	{
+		FreeCellCount += Removed;
+		bFreeRectsDirty = true;
+		return true;
+	}
+	return false;
+}
+
 // ============================================================================
 // Free-Rect Cache
 // ============================================================================

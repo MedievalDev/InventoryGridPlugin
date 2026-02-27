@@ -14,6 +14,7 @@
 #include "Components/TextBlock.h"
 #include "Blueprint/WidgetTree.h"
 #include "Engine/StreamableManager.h"
+#include "Engine/AssetManager.h"
 
 void UGridInventoryWidget::NativeConstruct()
 {
@@ -41,6 +42,15 @@ void UGridInventoryWidget::NativeConstruct()
 void UGridInventoryWidget::NativeDestruct()
 {
 	CloseContextMenu();
+
+	// Cancel any in-flight async icon loads
+	if (IconStreamHandle.IsValid() && IconStreamHandle->IsActive())
+	{
+		IconStreamHandle->CancelHandle();
+	}
+	IconStreamHandle.Reset();
+	IconCache.Empty();
+
 	UnbindFromInventory();
 	Super::NativeDestruct();
 }
@@ -76,6 +86,8 @@ void UGridInventoryWidget::SetInventoryComponent(UGridInventoryComponent* InInve
 		SetVisibility(ESlateVisibility::Visible);
 		SetupHitTestConfiguration();
 
+		// Preload icons asynchronously before first refresh
+		PreloadVisibleIcons();
 		RefreshGrid();
 
 		UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SetInventoryComponent — Grid %dx%d, GridCanvas=%s"),
@@ -242,13 +254,13 @@ UWidget* UGridInventoryWidget::CreateItemVisual_Implementation(const FInventoryI
 
 	UImage* IconImage = WidgetTree->ConstructWidget<UImage>();
 
-	// Load icon from soft reference
+	// Use cached icon (preloaded asynchronously) — no LoadSynchronous on UI thread
 	if (!Item.ItemDef->Icon.IsNull())
 	{
-		UTexture2D* LoadedIcon = Item.ItemDef->Icon.LoadSynchronous();
-		if (LoadedIcon)
+		UTexture2D* CachedTex = GetCachedIcon(Item.ItemDef->Icon);
+		if (CachedTex)
 		{
-			IconImage->SetBrushFromTexture(LoadedIcon);
+			IconImage->SetBrushFromTexture(CachedTex);
 		}
 	}
 
@@ -625,11 +637,11 @@ void UGridInventoryWidget::RecycleSlots()
 
 void UGridInventoryWidget::RefreshVisibleItems()
 {
-	ClearItemVisuals();
-
 	if (!InventoryComponent || !GridCanvas) return;
 
-	// Only create visuals for items that overlap the visible area
+	// Build set of currently visible items
+	TSet<FGuid> VisibleItemIDs;
+
 	for (const FInventoryItemInstance& Item : InventoryComponent->GetAllItems())
 	{
 		if (!Item.IsValid()) continue;
@@ -641,13 +653,34 @@ void UGridInventoryWidget::RefreshVisibleItems()
 		if (Pos.X + Size.X <= VisibleMin.X || Pos.X >= VisibleMax.X) continue;
 		if (Pos.Y + Size.Y <= VisibleMin.Y || Pos.Y >= VisibleMax.Y) continue;
 
+		VisibleItemIDs.Add(Item.UniqueID);
+
+		// Check if visual already exists and is up-to-date
+		FItemVisualEntry* Existing = ActiveItemVisuals.Find(Item.UniqueID);
+		if (Existing)
+		{
+			// Only rebuild if something changed (position, rotation, stack, class level)
+			if (Existing->Position == Pos && Existing->bRotated == Item.bIsRotated
+				&& Existing->StackCount == Item.StackCount && Existing->ClassLevel == Item.CurrentClassLevel)
+			{
+				continue; // No change — skip
+			}
+
+			// Changed — remove old visual
+			if (Existing->Visual)
+			{
+				Existing->Visual->RemoveFromParent();
+			}
+			ActiveItemVisuals.Remove(Item.UniqueID);
+		}
+
+		// Create new visual
 		UWidget* Visual = CreateItemVisual(Item);
 		if (!Visual) continue;
 
 		USizeBox* SB = WidgetTree->ConstructWidget<USizeBox>();
 		SB->SetWidthOverride(Size.X * CellSize);
 		SB->SetHeightOverride(Size.Y * CellSize);
-		// Item visuals must not intercept mouse events
 		SB->SetVisibility(ESlateVisibility::HitTestInvisible);
 		SB->AddChild(Visual);
 
@@ -659,15 +692,42 @@ void UGridInventoryWidget::RefreshVisibleItems()
 			CS->SetPosition(FVector2D(Pos.X * CellSize, Pos.Y * CellSize));
 		}
 
-		ActiveItemVisuals.Add(SB);
+		FItemVisualEntry Entry;
+		Entry.UniqueID = Item.UniqueID;
+		Entry.Position = Pos;
+		Entry.Size = Size;
+		Entry.StackCount = Item.StackCount;
+		Entry.ClassLevel = Item.CurrentClassLevel;
+		Entry.bRotated = Item.bIsRotated;
+		Entry.Visual = SB;
+		ActiveItemVisuals.Add(Item.UniqueID, Entry);
+	}
+
+	// Remove visuals for items that are no longer visible or no longer exist
+	TArray<FGuid> ToRemove;
+	for (auto& Pair : ActiveItemVisuals)
+	{
+		if (!VisibleItemIDs.Contains(Pair.Key))
+		{
+			ToRemove.Add(Pair.Key);
+		}
+	}
+	for (const FGuid& ID : ToRemove)
+	{
+		FItemVisualEntry& Entry = ActiveItemVisuals[ID];
+		if (Entry.Visual)
+		{
+			Entry.Visual->RemoveFromParent();
+		}
+		ActiveItemVisuals.Remove(ID);
 	}
 }
 
 void UGridInventoryWidget::ClearItemVisuals()
 {
-	for (UWidget* W : ActiveItemVisuals)
+	for (auto& Pair : ActiveItemVisuals)
 	{
-		if (W) W->RemoveFromParent();
+		if (Pair.Value.Visual) Pair.Value.Visual->RemoveFromParent();
 	}
 	ActiveItemVisuals.Empty();
 }
@@ -737,8 +797,97 @@ void UGridInventoryWidget::CloseContextMenu()
 	}
 }
 
+// ============================================================================
+// Async Icon Preloading
+// ============================================================================
+
+void UGridInventoryWidget::PreloadVisibleIcons()
+{
+	if (!InventoryComponent) return;
+
+	TArray<FSoftObjectPath> PathsToLoad;
+
+	for (const FInventoryItemInstance& Item : InventoryComponent->GetAllItems())
+	{
+		if (!Item.IsValid() || !Item.ItemDef || Item.ItemDef->Icon.IsNull()) continue;
+
+		const FSoftObjectPath Path = Item.ItemDef->Icon.ToSoftObjectPath();
+
+		// Skip already cached
+		if (IconCache.Contains(Path)) continue;
+
+		// Check if already loaded in memory
+		UTexture2D* AlreadyLoaded = Item.ItemDef->Icon.Get();
+		if (AlreadyLoaded)
+		{
+			IconCache.Add(Path, AlreadyLoaded);
+			continue;
+		}
+
+		PathsToLoad.AddUnique(Path);
+	}
+
+	if (PathsToLoad.Num() == 0) return;
+
+	// Cancel previous in-flight load if any
+	if (IconStreamHandle.IsValid() && IconStreamHandle->IsActive())
+	{
+		IconStreamHandle->CancelHandle();
+	}
+
+	TWeakObjectPtr<UGridInventoryWidget> WeakThis(this);
+
+	FStreamableManager& StreamableManager = UAssetManager::GetStreamableManager();
+	IconStreamHandle = StreamableManager.RequestAsyncLoad(PathsToLoad,
+		FStreamableDelegate::CreateLambda([WeakThis, PathsToLoad]()
+		{
+			if (!WeakThis.IsValid()) return;
+
+			// Cache all newly loaded textures
+			for (const FSoftObjectPath& Path : PathsToLoad)
+			{
+				UTexture2D* Loaded = Cast<UTexture2D>(Path.ResolveObject());
+				if (Loaded)
+				{
+					WeakThis->IconCache.Add(Path, Loaded);
+				}
+			}
+
+			// Trigger a visual refresh now that icons are available
+			WeakThis->RefreshVisibleItems();
+		})
+	);
+}
+
+UTexture2D* UGridInventoryWidget::GetCachedIcon(const TSoftObjectPtr<UTexture2D>& SoftIcon) const
+{
+	if (SoftIcon.IsNull()) return nullptr;
+
+	const FSoftObjectPath Path = SoftIcon.ToSoftObjectPath();
+
+	// Check cache first
+	const UTexture2D* const* Found = IconCache.Find(Path);
+	if (Found && *Found)
+	{
+		return const_cast<UTexture2D*>(*Found);
+	}
+
+	// If already loaded in memory (from another source), use it
+	UTexture2D* InMemory = SoftIcon.Get();
+	if (InMemory)
+	{
+		// Cache for future use (const_cast safe here since we're populating a mutable cache)
+		const_cast<UGridInventoryWidget*>(this)->IconCache.Add(Path, InMemory);
+		return InMemory;
+	}
+
+	return nullptr;
+}
+
 void UGridInventoryWidget::OnInventoryChanged()
 {
+	// Preload icons for any new items asynchronously
+	PreloadVisibleIcons();
 	RefreshItems();
 }
 

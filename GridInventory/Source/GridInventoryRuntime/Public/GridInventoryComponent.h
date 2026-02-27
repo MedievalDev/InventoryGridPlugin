@@ -293,32 +293,42 @@ public:
 	// ========================
 
 	/**
-	 * Save the complete inventory state to a slot.
-	 * Includes: player inventory, equipment, world containers.
-	 * @param SlotIndex Save slot number (0, 1, 2, ...)
-	 * @return true if saved successfully
+	 * Save the complete inventory state to a slot (synchronous).
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Save")
 	bool SaveInventory(int32 SlotIndex);
 
 	/**
-	 * Load the complete inventory state from a slot.
-	 * Clears current state before loading.
-	 * @param SlotIndex Save slot number (0, 1, 2, ...)
-	 * @return true if loaded successfully
+	 * Load the complete inventory state from a slot (synchronous).
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Save")
 	bool LoadInventory(int32 SlotIndex);
 
 	/**
-	 * Check if a save slot exists.
+	 * Save asynchronously — disk I/O on background thread.
+	 * Fires OnSaveComplete when done.
 	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Save")
+	void SaveInventoryAsync(int32 SlotIndex);
+
+	/**
+	 * Load asynchronously — disk I/O on background thread.
+	 * Fires OnLoadComplete when done.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Save")
+	void LoadInventoryAsync(int32 SlotIndex);
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSaveLoadComplete, int32, SlotIndex, bool, bSuccess);
+
+	UPROPERTY(BlueprintAssignable, Category = "Grid Inventory|Events")
+	FOnSaveLoadComplete OnSaveComplete;
+
+	UPROPERTY(BlueprintAssignable, Category = "Grid Inventory|Events")
+	FOnSaveLoadComplete OnLoadComplete;
+
 	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Save")
 	static bool DoesSaveExist(int32 SlotIndex);
 
-	/**
-	 * Delete a save slot.
-	 */
 	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Save")
 	static bool DeleteSave(int32 SlotIndex);
 
@@ -366,6 +376,9 @@ private:
 	UPROPERTY(ReplicatedUsing = OnRep_Items)
 	TArray<FInventoryItemInstance> Items;
 
+	/** O(1) lookup: UniqueID → index in Items array */
+	TMap<FGuid, int32> ItemIndexMap;
+
 	/** GC-safe storage for runtime-created item definitions */
 	UPROPERTY()
 	TArray<URuntimeItemDefinition*> RuntimeDefinitions;
@@ -384,7 +397,19 @@ private:
 
 	void RecalculateWeight();
 	bool CanAffordWeight(float AdditionalWeight) const;
+
+	/** O(1) item lookup via ItemIndexMap */
 	int32 FindItemIndex(const FGuid& UniqueID) const;
+
+	/**
+	 * Swap-remove an item at the given array index.
+	 * O(1) — swaps last element into removed position and updates ItemIndexMap.
+	 */
+	void SwapRemoveItemAtIndex(int32 Index);
+
+	/** Rebuild ItemIndexMap from Items array */
+	void RebuildItemIndexMap();
+
 	int32 TryStackOntoExisting(UInventoryItemDefinition* ItemDef, int32 Count);
 	void RebuildGridFromItems();
 
@@ -400,4 +425,10 @@ private:
 	static FString GetSaveSlotName(int32 SlotIndex);
 	static FItemSaveEntry CreateSaveEntry(const FInventoryItemInstance& Item);
 	bool RestoreItemFromEntry(const FItemSaveEntry& Entry);
+
+	/** Build save game object on game thread (used by both sync and async) */
+	class UInventorySaveGame* BuildSaveGameObject(int32 SlotIndex);
+
+	/** Process a loaded save game (used by both sync and async) */
+	bool ProcessLoadedSaveGame(class UInventorySaveGame* SaveGame, int32 SlotIndex);
 };

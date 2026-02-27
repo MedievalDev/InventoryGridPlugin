@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "InventoryItemInstance.h"
+#include "Engine/StreamableManager.h"
 #include "GridInventoryWidget.generated.h"
 
 class UGridInventoryComponent;
@@ -12,6 +13,7 @@ class UInventorySlotWidget;
 class UInventoryContextMenuWidget;
 class UCanvasPanel;
 class USizeBox;
+class UTexture2D;
 
 /**
  * VIRTUALIZED inventory grid widget. Optimized for large grids (60x80+).
@@ -126,7 +128,26 @@ private:
 	/** Active slots keyed by "Y * 10000 + X" */
 	TMap<int64, UInventorySlotWidget*> ActiveSlots;
 	TArray<UInventorySlotWidget*> SlotPool;
-	TArray<UWidget*> ActiveItemVisuals;
+
+	/** Diff-based item visuals: keyed by UniqueID for incremental updates */
+	struct FItemVisualEntry
+	{
+		FGuid UniqueID;
+		FIntPoint Position;
+		FIntPoint Size;
+		int32 StackCount;
+		int32 ClassLevel;
+		bool bRotated;
+		UWidget* Visual;
+
+		FItemVisualEntry() : StackCount(0), ClassLevel(0), bRotated(false), Visual(nullptr) {}
+	};
+	TMap<FGuid, FItemVisualEntry> ActiveItemVisuals;
+
+	/** Async icon preload: loaded textures cached by soft object path */
+	TMap<FSoftObjectPath, UTexture2D*> IconCache;
+	TSharedPtr<FStreamableHandle> IconStreamHandle;
+
 	TArray<UWidget*> GridLineWidgets;
 
 	// Grid-level mouse state
@@ -151,6 +172,11 @@ private:
 	void CreateGridLines();
 	void ClearGridLines();
 	void CloseContextMenu();
+
+	/** Preload all visible item icons asynchronously via FStreamableManager */
+	void PreloadVisibleIcons();
+	/** Get a cached texture (returns nullptr if not yet loaded) */
+	UTexture2D* GetCachedIcon(const TSoftObjectPtr<UTexture2D>& SoftIcon) const;
 
 	UFUNCTION()
 	void OnInventoryChanged();
