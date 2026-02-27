@@ -9,6 +9,7 @@
 
 class UGridInventoryComponent;
 class UInventorySlotWidget;
+class UInventoryContextMenuWidget;
 class UCanvasPanel;
 class USizeBox;
 
@@ -118,6 +119,10 @@ private:
 	FIntPoint VisibleMin;
 	FIntPoint VisibleMax;
 
+	/** Active context menu widget (one at a time) */
+	UPROPERTY()
+	UInventoryContextMenuWidget* ActiveContextMenu;
+
 	/** Active slots keyed by "Y * 10000 + X" */
 	TMap<int64, UInventorySlotWidget*> ActiveSlots;
 	TArray<UInventorySlotWidget*> SlotPool;
@@ -145,6 +150,7 @@ private:
 	void ClearItemVisuals();
 	void CreateGridLines();
 	void ClearGridLines();
+	void CloseContextMenu();
 
 	UFUNCTION()
 	void OnInventoryChanged();

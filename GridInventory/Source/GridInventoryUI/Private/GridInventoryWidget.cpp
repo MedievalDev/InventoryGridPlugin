@@ -3,6 +3,7 @@
 #include "GridInventoryWidget.h"
 #include "GridInventoryComponent.h"
 #include "InventorySlotWidget.h"
+#include "InventoryContextMenuWidget.h"
 #include "InventoryItemDefinition.h"
 #include "InventoryDragDropOperation.h"
 #include "Components/CanvasPanel.h"
@@ -39,6 +40,7 @@ void UGridInventoryWidget::NativeConstruct()
 
 void UGridInventoryWidget::NativeDestruct()
 {
+	CloseContextMenu();
 	UnbindFromInventory();
 	Super::NativeDestruct();
 }
@@ -169,7 +171,27 @@ void UGridInventoryWidget::ClearAllHighlights()
 
 // Default implementations
 void UGridInventoryWidget::OnItemClicked_Implementation(const FInventoryItemInstance& Item, int32 SlotX, int32 SlotY) {}
-void UGridInventoryWidget::OnItemRightClicked_Implementation(const FInventoryItemInstance& Item, int32 SlotX, int32 SlotY) {}
+
+void UGridInventoryWidget::OnItemRightClicked_Implementation(const FInventoryItemInstance& Item, int32 SlotX, int32 SlotY)
+{
+	CloseContextMenu();
+
+	ActiveContextMenu = CreateWidget<UInventoryContextMenuWidget>(GetOwningPlayer());
+	if (ActiveContextMenu)
+	{
+		ActiveContextMenu->InitMenu(Item, InventoryComponent);
+		ActiveContextMenu->AddToViewport(100);
+
+		// Position at mouse cursor
+		APlayerController* PC = GetOwningPlayer();
+		if (PC)
+		{
+			float MX, MY;
+			PC->GetMousePosition(MX, MY);
+			ActiveContextMenu->SetPositionInViewport(FVector2D(MX, MY));
+		}
+	}
+}
 
 void UGridInventoryWidget::OnItemHovered_Implementation(const FInventoryItemInstance& Item, int32 SlotX, int32 SlotY)
 {
@@ -304,6 +326,12 @@ void UGridInventoryWidget::SetupHitTestConfiguration()
 
 FReply UGridInventoryWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	// Close any open context menu on left-click
+	if (InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+	{
+		CloseContextMenu();
+	}
+
 	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] MouseDown — InventoryComponent=%s, GridCanvas=%s"),
 		InventoryComponent ? TEXT("OK") : TEXT("NULL"),
 		GridCanvas ? TEXT("OK") : TEXT("NULL"));
@@ -698,6 +726,15 @@ void UGridInventoryWidget::ClearGridLines()
 		if (W) W->RemoveFromParent();
 	}
 	GridLineWidgets.Empty();
+}
+
+void UGridInventoryWidget::CloseContextMenu()
+{
+	if (ActiveContextMenu)
+	{
+		ActiveContextMenu->RemoveFromParent();
+		ActiveContextMenu = nullptr;
+	}
 }
 
 void UGridInventoryWidget::OnInventoryChanged()
