@@ -10,6 +10,7 @@
 #include "GridInventoryComponent.generated.h"
 
 class UItemContainerInventory;
+struct FItemSaveEntry;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInventoryItemAdded, const FInventoryItemInstance&, Item);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInventoryItemRemoved, const FInventoryItemInstance&, Item);
@@ -261,6 +262,40 @@ public:
 	const FInventoryGrid& GetGrid() const { return Grid; }
 
 	// ========================
+	// Save / Load
+	// ========================
+
+	/**
+	 * Save the complete inventory state to a slot.
+	 * Includes: player inventory, equipment, world containers.
+	 * @param SlotIndex Save slot number (0, 1, 2, ...)
+	 * @return true if saved successfully
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Save")
+	bool SaveInventory(int32 SlotIndex);
+
+	/**
+	 * Load the complete inventory state from a slot.
+	 * Clears current state before loading.
+	 * @param SlotIndex Save slot number (0, 1, 2, ...)
+	 * @return true if loaded successfully
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Save")
+	bool LoadInventory(int32 SlotIndex);
+
+	/**
+	 * Check if a save slot exists.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Save")
+	static bool DoesSaveExist(int32 SlotIndex);
+
+	/**
+	 * Delete a save slot.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Save")
+	static bool DeleteSave(int32 SlotIndex);
+
+	// ========================
 	// Utility
 	// ========================
 
@@ -329,4 +364,9 @@ private:
 
 	bool Internal_AddItemAt(UInventoryItemDefinition* ItemDef, FIntPoint Position, bool bRotated, int32 Count);
 	bool Internal_RemoveItem(const FGuid& UniqueID, int32 Count);
+
+	// Save/Load helpers
+	static FString GetSaveSlotName(int32 SlotIndex);
+	static FItemSaveEntry CreateSaveEntry(const FInventoryItemInstance& Item);
+	bool RestoreItemFromEntry(const FItemSaveEntry& Entry);
 };

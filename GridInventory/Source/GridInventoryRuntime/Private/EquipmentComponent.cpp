@@ -395,3 +395,20 @@ void UEquipmentComponent::Internal_ClearSlot(FName SlotID)
 		EquippedItemsArray.RemoveAt(Idx);
 	}
 }
+
+// ============================================================================
+// Save/Load Support
+// ============================================================================
+
+void UEquipmentComponent::RestoreEquipmentSlot(FName SlotID, const FInventoryItemInstance& Item)
+{
+	Internal_ClearSlot(SlotID);
+	Internal_SetSlot(SlotID, Item);
+}
+
+void UEquipmentComponent::ClearAllSlots()
+{
+	EquippedSlotIDs.Empty();
+	EquippedItemsArray.Empty();
+	OnEquipmentChanged.Broadcast();
+}

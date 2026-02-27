@@ -2,7 +2,11 @@
 
 #include "GridInventoryComponent.h"
 #include "ItemContainerInventory.h"
+#include "InventorySaveGame.h"
+#include "EquipmentComponent.h"
+#include "InventoryContainer.h"
 #include "Net/UnrealNetwork.h"
+#include "Kismet/GameplayStatics.h"
 
 UGridInventoryComponent::UGridInventoryComponent()
 	: GridWidth(10)
@@ -671,6 +675,315 @@ void UGridInventoryComponent::ServerTransferItem_Implementation(FGuid UniqueID, 
 { TransferItem(UniqueID, T, Count); }
 
 void UGridInventoryComponent::OnRep_Items() { RebuildGridFromItems(); BroadcastChanged(); }
+
+// ============================================================================
+// Save / Load
+// ============================================================================
+
+FString UGridInventoryComponent::GetSaveSlotName(int32 SlotIndex)
+{
+	return FString::Printf(TEXT("Inventory_%d"), SlotIndex);
+}
+
+FItemSaveEntry UGridInventoryComponent::CreateSaveEntry(const FInventoryItemInstance& Item)
+{
+	FItemSaveEntry Entry;
+
+	if (Item.ItemDef)
+	{
+		Entry.ItemDefPath = FSoftObjectPath(Item.ItemDef);
+		Entry.bIsRuntimeCreated = false;
+		// TODO: detect URuntimeItemDefinition and serialize as JSON
+	}
+
+	Entry.GridPosition = Item.GridPosition;
+	Entry.bIsRotated = Item.bIsRotated;
+	Entry.StackCount = Item.StackCount;
+	Entry.CurrentClassLevel = Item.CurrentClassLevel;
+	Entry.UniqueID = Item.UniqueID;
+	Entry.InstanceEffects = Item.InstanceEffects;
+
+	// Save sub-inventory contents (for container items)
+	if (Item.SubInventory && Item.SubInventory->IsInitialized())
+	{
+		for (const FInventoryItemInstance& SubItem : Item.SubInventory->GetAllItems())
+		{
+			Entry.SubInventoryItems.Add(CreateSaveEntry(SubItem));
+		}
+	}
+
+	return Entry;
+}
+
+bool UGridInventoryComponent::RestoreItemFromEntry(const FItemSaveEntry& Entry)
+{
+	UInventoryItemDefinition* ItemDef = nullptr;
+
+	if (!Entry.bIsRuntimeCreated)
+	{
+		ItemDef = Cast<UInventoryItemDefinition>(Entry.ItemDefPath.TryLoad());
+		if (!ItemDef)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SaveLoad: Failed to load ItemDef '%s'"),
+				*Entry.ItemDefPath.ToString());
+			return false;
+		}
+	}
+	else
+	{
+		// TODO: Create URuntimeItemDefinition from RuntimeItemJSON
+		UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SaveLoad: Runtime items not yet supported"));
+		return false;
+	}
+
+	// Create the item instance with the SAVED UniqueID (not a new one)
+	FInventoryItemInstance NewItem;
+	NewItem.UniqueID = Entry.UniqueID;
+	NewItem.ItemDef = ItemDef;
+	NewItem.GridPosition = Entry.GridPosition;
+	NewItem.bIsRotated = Entry.bIsRotated;
+	NewItem.StackCount = Entry.StackCount;
+	NewItem.CurrentClassLevel = Entry.CurrentClassLevel;
+	NewItem.InstanceEffects = Entry.InstanceEffects;
+
+	// Place on the grid
+	const FIntPoint EffSize = ItemDef->GetEffectiveSize(NewItem.bIsRotated);
+	if (!Grid.PlaceItem(NewItem.UniqueID, NewItem.GridPosition, EffSize))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SaveLoad: Cannot place '%s' at (%d,%d)"),
+			*ItemDef->DisplayName.ToString(), NewItem.GridPosition.X, NewItem.GridPosition.Y);
+		return false;
+	}
+
+	Items.Add(NewItem);
+
+	// Restore sub-inventory if this is a container item
+	if (Entry.SubInventoryItems.Num() > 0 && ItemDef->bIsContainer)
+	{
+		FInventoryItemInstance& AddedItem = Items.Last();
+		UItemContainerInventory* SubInv = AddedItem.GetOrCreateSubInventory(this);
+		if (SubInv)
+		{
+			for (const FItemSaveEntry& SubEntry : Entry.SubInventoryItems)
+			{
+				UInventoryItemDefinition* SubDef = nullptr;
+				if (!SubEntry.bIsRuntimeCreated)
+				{
+					SubDef = Cast<UInventoryItemDefinition>(SubEntry.ItemDefPath.TryLoad());
+				}
+				if (SubDef)
+				{
+					SubInv->TryAddItemAt(SubDef, SubEntry.GridPosition, SubEntry.bIsRotated, SubEntry.StackCount);
+				}
+			}
+		}
+	}
+
+	return true;
+}
+
+bool UGridInventoryComponent::SaveInventory(int32 SlotIndex)
+{
+	UInventorySaveGame* SaveGame = NewObject<UInventorySaveGame>();
+	SaveGame->GridWidth = GridWidth;
+	SaveGame->GridHeight = GridHeight;
+
+	// 1. Save player inventory items
+	for (const FInventoryItemInstance& Item : Items)
+	{
+		SaveGame->InventoryItems.Add(CreateSaveEntry(Item));
+	}
+
+	// 2. Save equipment (find on same actor)
+	if (GetOwner())
+	{
+		UEquipmentComponent* Equipment = GetOwner()->FindComponentByClass<UEquipmentComponent>();
+		if (Equipment)
+		{
+			TMap<FName, FInventoryItemInstance> EquippedItems = Equipment->GetAllEquippedItems();
+			for (auto& Pair : EquippedItems)
+			{
+				SaveGame->EquipmentSlotIDs.Add(Pair.Key);
+				SaveGame->EquipmentItems.Add(CreateSaveEntry(Pair.Value));
+			}
+		}
+	}
+
+	// 3. Save world containers
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		TArray<AActor*> ContainerActors;
+		UGameplayStatics::GetAllActorsOfClass(World, AInventoryContainer::StaticClass(), ContainerActors);
+
+		for (AActor* Actor : ContainerActors)
+		{
+			AInventoryContainer* Container = Cast<AInventoryContainer>(Actor);
+			if (!Container || Container->ContainerID == NAME_None)
+			{
+				continue;
+			}
+
+			FContainerSaveData Data;
+			Data.ContainerID = Container->ContainerID;
+			Data.bIsLocked = Container->bIsLocked;
+			Data.RequiredKeyItemID = Container->RequiredKeyItemID;
+			Data.bConsumeKey = Container->bConsumeKey;
+			Data.bLootGenerated = Container->bLootGenerated;
+
+			if (Container->InventoryComponent)
+			{
+				for (const FInventoryItemInstance& Item : Container->InventoryComponent->GetAllItems())
+				{
+					Data.Items.Add(CreateSaveEntry(Item));
+				}
+			}
+
+			SaveGame->Containers.Add(Data);
+		}
+	}
+
+	// 4. Write to disk
+	const FString SlotName = GetSaveSlotName(SlotIndex);
+	const bool bSuccess = UGameplayStatics::SaveGameToSlot(SaveGame, SlotName, 0);
+
+	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SaveInventory — Slot %d: %d items, %d equipment, %d containers → %s"),
+		SlotIndex, SaveGame->InventoryItems.Num(),
+		SaveGame->EquipmentSlotIDs.Num(), SaveGame->Containers.Num(),
+		bSuccess ? TEXT("OK") : TEXT("FAILED"));
+
+	return bSuccess;
+}
+
+bool UGridInventoryComponent::LoadInventory(int32 SlotIndex)
+{
+	const FString SlotName = GetSaveSlotName(SlotIndex);
+
+	UInventorySaveGame* SaveGame = Cast<UInventorySaveGame>(
+		UGameplayStatics::LoadGameFromSlot(SlotName, 0));
+
+	if (!SaveGame)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[GridInventory] LoadInventory — Slot %d not found"), SlotIndex);
+		return false;
+	}
+
+	// 1. Clear current inventory
+	ClearInventory();
+
+	// 2. Restore player inventory items
+	int32 RestoredCount = 0;
+	for (const FItemSaveEntry& Entry : SaveGame->InventoryItems)
+	{
+		if (RestoreItemFromEntry(Entry))
+		{
+			RestoredCount++;
+		}
+	}
+
+	// 3. Restore equipment
+	if (GetOwner())
+	{
+		UEquipmentComponent* Equipment = GetOwner()->FindComponentByClass<UEquipmentComponent>();
+		if (Equipment)
+		{
+			Equipment->ClearAllSlots();
+
+			for (int32 i = 0; i < SaveGame->EquipmentSlotIDs.Num(); ++i)
+			{
+				if (!SaveGame->EquipmentItems.IsValidIndex(i)) break;
+
+				const FItemSaveEntry& Entry = SaveGame->EquipmentItems[i];
+				UInventoryItemDefinition* ItemDef = nullptr;
+
+				if (!Entry.bIsRuntimeCreated)
+				{
+					ItemDef = Cast<UInventoryItemDefinition>(Entry.ItemDefPath.TryLoad());
+				}
+
+				if (ItemDef)
+				{
+					FInventoryItemInstance EquipItem;
+					EquipItem.UniqueID = Entry.UniqueID;
+					EquipItem.ItemDef = ItemDef;
+					EquipItem.StackCount = Entry.StackCount;
+					EquipItem.CurrentClassLevel = Entry.CurrentClassLevel;
+					EquipItem.InstanceEffects = Entry.InstanceEffects;
+
+					Equipment->RestoreEquipmentSlot(SaveGame->EquipmentSlotIDs[i], EquipItem);
+				}
+			}
+		}
+	}
+
+	// 4. Restore world containers
+	UWorld* World = GetWorld();
+	if (World && SaveGame->Containers.Num() > 0)
+	{
+		TArray<AActor*> ContainerActors;
+		UGameplayStatics::GetAllActorsOfClass(World, AInventoryContainer::StaticClass(), ContainerActors);
+
+		for (const FContainerSaveData& ContainerData : SaveGame->Containers)
+		{
+			for (AActor* Actor : ContainerActors)
+			{
+				AInventoryContainer* Container = Cast<AInventoryContainer>(Actor);
+				if (!Container || Container->ContainerID != ContainerData.ContainerID)
+				{
+					continue;
+				}
+
+				// Restore container state
+				Container->bIsLocked = ContainerData.bIsLocked;
+				Container->RequiredKeyItemID = ContainerData.RequiredKeyItemID;
+				Container->bConsumeKey = ContainerData.bConsumeKey;
+				Container->bLootGenerated = ContainerData.bLootGenerated;
+
+				// Restore container items
+				if (Container->InventoryComponent)
+				{
+					Container->InventoryComponent->ClearInventory();
+
+					for (const FItemSaveEntry& Entry : ContainerData.Items)
+					{
+						UInventoryItemDefinition* ItemDef = nullptr;
+						if (!Entry.bIsRuntimeCreated)
+						{
+							ItemDef = Cast<UInventoryItemDefinition>(Entry.ItemDefPath.TryLoad());
+						}
+
+						if (ItemDef)
+						{
+							Container->InventoryComponent->TryAddItemAt(
+								ItemDef, Entry.GridPosition, Entry.bIsRotated, Entry.StackCount);
+						}
+					}
+				}
+
+				break;
+			}
+		}
+	}
+
+	RecalculateWeight();
+	BroadcastChanged();
+
+	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] LoadInventory — Slot %d: %d/%d items restored, %d equipment, %d containers"),
+		SlotIndex, RestoredCount, SaveGame->InventoryItems.Num(),
+		SaveGame->EquipmentSlotIDs.Num(), SaveGame->Containers.Num());
+
+	return true;
+}
+
+bool UGridInventoryComponent::DoesSaveExist(int32 SlotIndex)
+{
+	return UGameplayStatics::DoesSaveGameExist(GetSaveSlotName(SlotIndex), 0);
+}
+
+bool UGridInventoryComponent::DeleteSave(int32 SlotIndex)
+{
+	return UGameplayStatics::DeleteGameInSlot(GetSaveSlotName(SlotIndex), 0);
+}
 
 // ============================================================================
 // Internal

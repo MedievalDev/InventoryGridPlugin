@@ -148,6 +148,20 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Equipment|Query")
 	float GetTotalEquipmentWeight() const;
 
+	// ========================
+	// Save/Load Support
+	// ========================
+
+	/**
+	 * Restore an item directly into a slot (used by save/load system).
+	 * Bypasses inventory interaction and type checks — the save data is assumed valid.
+	 * Clears any existing item in the slot first.
+	 */
+	void RestoreEquipmentSlot(FName SlotID, const FInventoryItemInstance& Item);
+
+	/** Clear all equipment slots (used before loading saved state) */
+	void ClearAllSlots();
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;

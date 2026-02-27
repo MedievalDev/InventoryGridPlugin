@@ -33,6 +33,14 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Container")
 	UGridInventoryComponent* InventoryComponent;
 
+	/**
+	 * Stable identifier for save/load — must be unique per container in the level.
+	 * Set this in the editor for each placed container. Containers without an ID
+	 * are skipped during save/load.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Container|Save", SaveGame)
+	FName ContainerID;
+
 	// ========================
 	// Lock System
 	// ========================
