@@ -1,0 +1,34 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Grid Inventory",
+	"Description": "High-performance grid inventory with soft references, virtualized UI, JSON item import, alchemy system, spawn data, and network replication. Optimized for large grids up to 60x80.",
+	"Category": "Gameplay",
+	"CreatedBy": "Marco",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "GridInventoryRuntime",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "GridInventoryUI",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "GridInventoryEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}
