@@ -19,6 +19,8 @@ void UGridInventoryWidget::NativeConstruct()
 	Super::NativeConstruct();
 	if (CellSize <= 0.0f) CellSize = 64.0f;
 	if (ViewportBuffer <= 0) ViewportBuffer = 3;
+	if (GridLineThickness <= 0.0f) GridLineThickness = 1.0f;
+	if (GridLineColor == FLinearColor(0, 0, 0, 0)) GridLineColor = FLinearColor(0.3f, 0.3f, 0.3f, 0.6f);
 	VisibleMin = FIntPoint::ZeroValue;
 	VisibleMax = FIntPoint::ZeroValue;
 	HoveredCell = FIntPoint(-1, -1);
@@ -107,6 +109,7 @@ void UGridInventoryWidget::UpdateVisibleArea(FVector2D ViewportOffset, FVector2D
 
 void UGridInventoryWidget::RefreshGrid()
 {
+	CreateGridLines();
 	RecycleSlots();
 	RefreshVisibleItems();
 }
@@ -167,8 +170,47 @@ void UGridInventoryWidget::ClearAllHighlights()
 // Default implementations
 void UGridInventoryWidget::OnItemClicked_Implementation(const FInventoryItemInstance& Item, int32 SlotX, int32 SlotY) {}
 void UGridInventoryWidget::OnItemRightClicked_Implementation(const FInventoryItemInstance& Item, int32 SlotX, int32 SlotY) {}
-void UGridInventoryWidget::OnItemHovered_Implementation(const FInventoryItemInstance& Item, int32 SlotX, int32 SlotY) {}
-void UGridInventoryWidget::OnItemUnhovered_Implementation() {}
+
+void UGridInventoryWidget::OnItemHovered_Implementation(const FInventoryItemInstance& Item, int32 SlotX, int32 SlotY)
+{
+	if (!Item.ItemDef) return;
+
+	// Build tooltip text from item properties
+	FString Tip = Item.GetDisplayName().ToString();
+	Tip += TEXT("\n");
+
+	if (!Item.ItemDef->ItemType.IsNone())
+	{
+		Tip += FString::Printf(TEXT("Typ: %s\n"), *Item.ItemDef->ItemType.ToString());
+	}
+
+	if (!Item.ItemDef->Description.IsEmpty())
+	{
+		Tip += Item.ItemDef->Description.ToString();
+		Tip += TEXT("\n");
+	}
+
+	// Effects
+	TArray<FItemEffectValue> AllEffects = Item.GetAllEffectValues();
+	for (const FItemEffectValue& Eff : AllEffects)
+	{
+		Tip += FString::Printf(TEXT("%s: %.0f\n"), *Eff.EffectID.ToString(), Eff.Value);
+	}
+
+	// Weight + Stack
+	Tip += FString::Printf(TEXT("Gewicht: %.1f"), Item.GetOwnWeight());
+	if (Item.ItemDef->bCanStack && Item.StackCount > 1)
+	{
+		Tip += FString::Printf(TEXT("  [%d/%d]"), Item.StackCount, Item.ItemDef->MaxStackSize);
+	}
+
+	SetToolTipText(FText::FromString(Tip));
+}
+
+void UGridInventoryWidget::OnItemUnhovered_Implementation()
+{
+	SetToolTipText(FText::GetEmpty());
+}
 
 UWidget* UGridInventoryWidget::CreateItemVisual_Implementation(const FInventoryItemInstance& Item)
 {
@@ -600,6 +642,62 @@ void UGridInventoryWidget::ClearItemVisuals()
 		if (W) W->RemoveFromParent();
 	}
 	ActiveItemVisuals.Empty();
+}
+
+void UGridInventoryWidget::CreateGridLines()
+{
+	ClearGridLines();
+	if (!bShowGridLines || !InventoryComponent || !GridCanvas) return;
+
+	const int32 GW = InventoryComponent->GridWidth;
+	const int32 GH = InventoryComponent->GridHeight;
+	const float TotalW = GW * CellSize;
+	const float TotalH = GH * CellSize;
+
+	// Vertical lines
+	for (int32 X = 0; X <= GW; ++X)
+	{
+		UImage* Line = WidgetTree->ConstructWidget<UImage>();
+		Line->SetBrushSize(FVector2D(GridLineThickness, TotalH));
+		Line->SetBrushTintColor(FSlateColor(GridLineColor));
+		Line->SetVisibility(ESlateVisibility::HitTestInvisible);
+		GridCanvas->AddChild(Line);
+
+		if (UCanvasPanelSlot* CS = Cast<UCanvasPanelSlot>(Line->Slot))
+		{
+			CS->SetAutoSize(true);
+			CS->SetPosition(FVector2D(X * CellSize - GridLineThickness * 0.5f, 0.0f));
+		}
+
+		GridLineWidgets.Add(Line);
+	}
+
+	// Horizontal lines
+	for (int32 Y = 0; Y <= GH; ++Y)
+	{
+		UImage* Line = WidgetTree->ConstructWidget<UImage>();
+		Line->SetBrushSize(FVector2D(TotalW, GridLineThickness));
+		Line->SetBrushTintColor(FSlateColor(GridLineColor));
+		Line->SetVisibility(ESlateVisibility::HitTestInvisible);
+		GridCanvas->AddChild(Line);
+
+		if (UCanvasPanelSlot* CS = Cast<UCanvasPanelSlot>(Line->Slot))
+		{
+			CS->SetAutoSize(true);
+			CS->SetPosition(FVector2D(0.0f, Y * CellSize - GridLineThickness * 0.5f));
+		}
+
+		GridLineWidgets.Add(Line);
+	}
+}
+
+void UGridInventoryWidget::ClearGridLines()
+{
+	for (UWidget* W : GridLineWidgets)
+	{
+		if (W) W->RemoveFromParent();
+	}
+	GridLineWidgets.Empty();
 }
 
 void UGridInventoryWidget::OnInventoryChanged()

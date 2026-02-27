@@ -38,6 +38,22 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid Inventory|Config", meta = (ClampMin = "1", ClampMax = "10"))
 	int32 ViewportBuffer;
 
+	// ========================
+	// Grid Lines
+	// ========================
+
+	/** Whether to draw grid lines between cells */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid Inventory|Config")
+	bool bShowGridLines;
+
+	/** Thickness of grid lines in pixels */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid Inventory|Config", meta = (ClampMin = "0.5", ClampMax = "4.0"))
+	float GridLineThickness;
+
+	/** Color of grid lines */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid Inventory|Config")
+	FLinearColor GridLineColor;
+
 	UPROPERTY(BlueprintReadWrite, meta = (BindWidget, OptionalWidget = true), Category = "Grid Inventory|Widgets")
 	UCanvasPanel* GridCanvas;
 
@@ -106,6 +122,7 @@ private:
 	TMap<int64, UInventorySlotWidget*> ActiveSlots;
 	TArray<UInventorySlotWidget*> SlotPool;
 	TArray<UWidget*> ActiveItemVisuals;
+	TArray<UWidget*> GridLineWidgets;
 
 	// Grid-level mouse state
 	FIntPoint PendingDragCell;
@@ -126,6 +143,8 @@ private:
 	void RecycleSlots();
 	void RefreshVisibleItems();
 	void ClearItemVisuals();
+	void CreateGridLines();
+	void ClearGridLines();
 
 	UFUNCTION()
 	void OnInventoryChanged();
