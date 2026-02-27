@@ -84,6 +84,16 @@ protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
 
+	// Grid-level mouse handling — all events are caught here, slots are visual-only
+	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
+	virtual FReply NativeOnMouseButtonUp(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
+	virtual FReply NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
+	virtual void NativeOnMouseLeave(const FPointerEvent& InMouseEvent) override;
+	virtual void NativeOnDragDetected(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent, UDragDropOperation*& OutOperation) override;
+	virtual bool NativeOnDrop(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation) override;
+	virtual bool NativeOnDragOver(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation) override;
+	virtual void NativeOnDragLeave(const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation) override;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Grid Inventory|Widget")
 	UGridInventoryComponent* InventoryComponent;
 
@@ -96,7 +106,19 @@ private:
 	TArray<UInventorySlotWidget*> SlotPool;
 	TArray<UWidget*> ActiveItemVisuals;
 
+	// Grid-level mouse state
+	FIntPoint PendingDragCell;
+	FGuid PendingDragItemID;
+	FIntPoint HoveredCell;
+	FGuid HoveredItemID;
+
 	int64 PosKey(int32 X, int32 Y) const { return (int64)Y * 10000 + X; }
+
+	/** Convert absolute screen position to grid cell coordinates */
+	FIntPoint ScreenToCell(const FVector2D& AbsolutePosition) const;
+
+	/** Force all blueprint child widgets to SelfHitTestInvisible so events reach this widget */
+	void SetupHitTestConfiguration();
 
 	UInventorySlotWidget* AcquireSlot();
 	void ReleaseSlot(UInventorySlotWidget* InvSlot);
