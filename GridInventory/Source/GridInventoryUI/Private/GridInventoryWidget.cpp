@@ -4,6 +4,7 @@
 #include "GridInventoryComponent.h"
 #include "InventorySlotWidget.h"
 #include "InventoryItemDefinition.h"
+#include "InventoryDragDropOperation.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/Image.h"
@@ -20,6 +21,15 @@ void UGridInventoryWidget::NativeConstruct()
 	if (ViewportBuffer <= 0) ViewportBuffer = 3;
 	VisibleMin = FIntPoint::ZeroValue;
 	VisibleMax = FIntPoint::ZeroValue;
+	HoveredCell = FIntPoint(-1, -1);
+
+	// Make this widget hittable and focusable — grid handles all mouse events
+	bIsFocusable = true;
+	SetVisibility(ESlateVisibility::Visible);
+
+	// Force all blueprint child widgets (SizeBox, Border, GridCanvas etc.)
+	// to SelfHitTestInvisible so mouse events bubble up to this widget
+	SetupHitTestConfiguration();
 }
 
 void UGridInventoryWidget::NativeDestruct()
@@ -186,6 +196,224 @@ UWidget* UGridInventoryWidget::CreateItemVisual_Implementation(const FInventoryI
 }
 
 // ============================================================================
+// Grid-Level Mouse Handling
+// ============================================================================
+
+FIntPoint UGridInventoryWidget::ScreenToCell(const FVector2D& AbsolutePosition) const
+{
+	if (!GridCanvas) return FIntPoint(-1, -1);
+
+	const FGeometry CanvasGeo = GridCanvas->GetCachedGeometry();
+	const FVector2D LocalPos = CanvasGeo.AbsoluteToLocal(AbsolutePosition);
+
+	return FIntPoint(
+		FMath::FloorToInt(LocalPos.X / CellSize),
+		FMath::FloorToInt(LocalPos.Y / CellSize)
+	);
+}
+
+void UGridInventoryWidget::SetupHitTestConfiguration()
+{
+	if (!WidgetTree) return;
+
+	// Set all existing child widgets (SizeBox, Border, GridCanvas etc.) to
+	// SelfHitTestInvisible — they remain visible but don't intercept mouse events.
+	// This ensures all events bubble up to GridInventoryWidget::NativeOnMouseButtonDown.
+	WidgetTree->ForEachWidget([this](UWidget* Widget)
+	{
+		if (Widget && Widget != this)
+		{
+			Widget->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+		}
+	});
+}
+
+FReply UGridInventoryWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+{
+	if (!InventoryComponent || !GridCanvas)
+	{
+		return FReply::Unhandled();
+	}
+
+	const FIntPoint Cell = ScreenToCell(InMouseEvent.GetScreenSpacePosition());
+	const int32 CellX = Cell.X;
+	const int32 CellY = Cell.Y;
+
+	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] MouseDown at Cell (%d, %d)"), CellX, CellY);
+
+	if (CellX < 0 || CellY < 0 || CellX >= InventoryComponent->GridWidth || CellY >= InventoryComponent->GridHeight)
+	{
+		return FReply::Handled();
+	}
+
+	FInventoryItemInstance Item = InventoryComponent->GetItemAtPosition(FIntPoint(CellX, CellY));
+
+	if (InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+	{
+		if (Item.IsValid())
+		{
+			// Store drag info for NativeOnDragDetected
+			PendingDragCell = Cell;
+			PendingDragItemID = Item.UniqueID;
+			OnItemClicked(Item, CellX, CellY);
+
+			// UE 4.27: use DetectDrag instead of CaptureMouse
+			return FReply::Handled().DetectDrag(TakeWidget(), EKeys::LeftMouseButton);
+		}
+	}
+	else if (InMouseEvent.GetEffectingButton() == EKeys::RightMouseButton)
+	{
+		if (Item.IsValid())
+		{
+			OnItemRightClicked(Item, CellX, CellY);
+		}
+	}
+
+	return FReply::Handled();
+}
+
+FReply UGridInventoryWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+{
+	PendingDragItemID.Invalidate();
+	return FReply::Handled();
+}
+
+FReply UGridInventoryWidget::NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+{
+	if (!InventoryComponent || !GridCanvas) return FReply::Unhandled();
+
+	const FIntPoint Cell = ScreenToCell(InMouseEvent.GetScreenSpacePosition());
+
+	if (Cell != HoveredCell)
+	{
+		HoveredCell = Cell;
+
+		if (Cell.X >= 0 && Cell.Y >= 0
+			&& Cell.X < InventoryComponent->GridWidth
+			&& Cell.Y < InventoryComponent->GridHeight)
+		{
+			FInventoryItemInstance Item = InventoryComponent->GetItemAtPosition(Cell);
+			if (Item.IsValid())
+			{
+				if (Item.UniqueID != HoveredItemID)
+				{
+					HoveredItemID = Item.UniqueID;
+					OnItemHovered(Item, Cell.X, Cell.Y);
+				}
+			}
+			else if (HoveredItemID.IsValid())
+			{
+				HoveredItemID.Invalidate();
+				OnItemUnhovered();
+			}
+		}
+		else if (HoveredItemID.IsValid())
+		{
+			HoveredItemID.Invalidate();
+			OnItemUnhovered();
+		}
+	}
+
+	return FReply::Unhandled();
+}
+
+void UGridInventoryWidget::NativeOnMouseLeave(const FPointerEvent& InMouseEvent)
+{
+	Super::NativeOnMouseLeave(InMouseEvent);
+
+	if (HoveredItemID.IsValid())
+	{
+		HoveredItemID.Invalidate();
+		OnItemUnhovered();
+	}
+	HoveredCell = FIntPoint(-1, -1);
+}
+
+void UGridInventoryWidget::NativeOnDragDetected(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent, UDragDropOperation*& OutOperation)
+{
+	if (!InventoryComponent || !PendingDragItemID.IsValid()) return;
+
+	FInventoryItemInstance Item = InventoryComponent->GetItemByID(PendingDragItemID);
+	if (!Item.IsValid()) return;
+
+	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] DragDetected — Item '%s' from Cell (%d, %d)"),
+		*Item.ItemDef->DisplayName.ToString(), PendingDragCell.X, PendingDragCell.Y);
+
+	UInventoryDragDropOperation* DragOp = NewObject<UInventoryDragDropOperation>();
+	DragOp->DraggedItem = Item;
+	DragOp->SourceInventory = InventoryComponent;
+	DragOp->bDragRotated = false;
+	DragOp->GrabOffset = PendingDragCell - Item.GridPosition;
+	DragOp->DragCount = 0; // entire stack
+
+	// Create drag visual
+	UWidget* Visual = CreateItemVisual(Item);
+	if (Visual)
+	{
+		DragOp->DefaultDragVisual = Visual;
+		DragOp->Pivot = EDragPivot::MouseDown;
+	}
+
+	// Remove the item from its current position so the grid shows it as free
+	// (if the drop fails, NativeOnDragCancelled should restore it)
+	OutOperation = DragOp;
+
+	PendingDragItemID.Invalidate();
+}
+
+bool UGridInventoryWidget::NativeOnDragOver(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation)
+{
+	UInventoryDragDropOperation* DragOp = Cast<UInventoryDragDropOperation>(InOperation);
+	if (!DragOp || !InventoryComponent || !GridCanvas) return false;
+
+	ClearAllHighlights();
+
+	const FIntPoint Cell = ScreenToCell(InDragDropEvent.GetScreenSpacePosition());
+	const FIntPoint DropPos = Cell - DragOp->GrabOffset;
+	const FIntPoint Size = DragOp->GetEffectiveDragSize();
+	const bool bEffRot = DragOp->DraggedItem.bIsRotated != DragOp->bDragRotated;
+	const bool bCanPlace = InventoryComponent->CanPlaceAt(DragOp->DraggedItem.ItemDef, DropPos, bEffRot);
+
+	HighlightArea(DropPos, Size, bCanPlace);
+
+	return true;
+}
+
+void UGridInventoryWidget::NativeOnDragLeave(const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation)
+{
+	ClearAllHighlights();
+	Super::NativeOnDragLeave(InDragDropEvent, InOperation);
+}
+
+bool UGridInventoryWidget::NativeOnDrop(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation)
+{
+	ClearAllHighlights();
+
+	UInventoryDragDropOperation* DragOp = Cast<UInventoryDragDropOperation>(InOperation);
+	if (!DragOp || !InventoryComponent || !GridCanvas) return false;
+
+	const FIntPoint Cell = ScreenToCell(InDragDropEvent.GetScreenSpacePosition());
+	const FIntPoint DropPos = Cell - DragOp->GrabOffset;
+	const bool bEffRot = DragOp->DraggedItem.bIsRotated != DragOp->bDragRotated;
+
+	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] Drop at Cell (%d, %d) → DropPos (%d, %d)"),
+		Cell.X, Cell.Y, DropPos.X, DropPos.Y);
+
+	if (DragOp->SourceInventory == InventoryComponent)
+	{
+		return InventoryComponent->MoveItem(DragOp->DraggedItem.UniqueID, DropPos, bEffRot);
+	}
+
+	if (DragOp->SourceInventory)
+	{
+		return DragOp->SourceInventory->TransferItemTo(
+			DragOp->DraggedItem.UniqueID, InventoryComponent, DropPos, bEffRot, DragOp->DragCount);
+	}
+
+	return false;
+}
+
+// ============================================================================
 // Virtualization - Slot Pool Management
 // ============================================================================
 
@@ -197,7 +425,7 @@ UInventorySlotWidget* UGridInventoryWidget::AcquireSlot()
 	{
 		// Reuse from pool
 		InvSlot = SlotPool.Pop();
-		InvSlot->SetVisibility(ESlateVisibility::Visible);
+		InvSlot->SetVisibility(ESlateVisibility::HitTestInvisible);
 	}
 	else
 	{
@@ -212,6 +440,8 @@ UInventorySlotWidget* UGridInventoryWidget::AcquireSlot()
 			USizeBox* SB = WidgetTree->ConstructWidget<USizeBox>();
 			SB->SetWidthOverride(CellSize);
 			SB->SetHeightOverride(CellSize);
+			// SizeBox passes through hit-tests; slot itself is HitTestInvisible
+			SB->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 			SB->AddChild(InvSlot);
 			GridCanvas->AddChild(SB);
 		}
@@ -311,6 +541,8 @@ void UGridInventoryWidget::RefreshVisibleItems()
 		USizeBox* SB = WidgetTree->ConstructWidget<USizeBox>();
 		SB->SetWidthOverride(Size.X * CellSize);
 		SB->SetHeightOverride(Size.Y * CellSize);
+		// Item visuals must not intercept mouse events
+		SB->SetVisibility(ESlateVisibility::HitTestInvisible);
 		SB->AddChild(Visual);
 
 		GridCanvas->AddChild(SB);

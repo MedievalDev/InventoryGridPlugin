@@ -7,8 +7,8 @@
 UInventorySlotWidget::UInventorySlotWidget(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	bIsFocusable = true;
-	SetVisibility(ESlateVisibility::Visible);
+	// Slots are visual-only — all mouse handling is on the GridInventoryWidget
+	SetVisibility(ESlateVisibility::HitTestInvisible);
 }
 
 void UInventorySlotWidget::InitSlot(int32 InX, int32 InY, UGridInventoryComponent* InInventory)
