@@ -30,12 +30,29 @@ void UGridInventoryWidget::NativeConstruct()
 	// Force all blueprint child widgets (SizeBox, Border, GridCanvas etc.)
 	// to SelfHitTestInvisible so mouse events bubble up to this widget
 	SetupHitTestConfiguration();
+
+	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] NativeConstruct — Visibility=%d, GridCanvas=%s, bIsFocusable=%d"),
+		(int32)GetVisibility(), GridCanvas ? TEXT("OK") : TEXT("NULL"), bIsFocusable ? 1 : 0);
 }
 
 void UGridInventoryWidget::NativeDestruct()
 {
 	UnbindFromInventory();
 	Super::NativeDestruct();
+}
+
+void UGridInventoryWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
+{
+	Super::NativeTick(MyGeometry, InDeltaTime);
+
+	// Guard: Blueprint may toggle visibility to SelfHitTestInvisible (the UE4 default
+	// for "Set Visibility" nodes). That makes this widget non-hittable and breaks all
+	// mouse handling. Upgrade to Visible whenever detected.
+	if (GetVisibility() == ESlateVisibility::SelfHitTestInvisible)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[GridInventory] Visibility was SelfHitTestInvisible — upgrading to Visible for hit testing"));
+		SetVisibility(ESlateVisibility::Visible);
+	}
 }
 
 void UGridInventoryWidget::SetInventoryComponent(UGridInventoryComponent* InInventory)
@@ -51,7 +68,15 @@ void UGridInventoryWidget::SetInventoryComponent(UGridInventoryComponent* InInve
 		VisibleMin = FIntPoint(0, 0);
 		VisibleMax = FIntPoint(InventoryComponent->GridWidth, InventoryComponent->GridHeight);
 
+		// Re-enforce hittable state — Blueprint calls may have changed visibility
+		SetVisibility(ESlateVisibility::Visible);
+		SetupHitTestConfiguration();
+
 		RefreshGrid();
+
+		UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SetInventoryComponent — Grid %dx%d, GridCanvas=%s"),
+			InventoryComponent->GridWidth, InventoryComponent->GridHeight,
+			GridCanvas ? TEXT("OK") : TEXT("NULL"));
 	}
 }
 
@@ -216,23 +241,34 @@ void UGridInventoryWidget::SetupHitTestConfiguration()
 {
 	if (!WidgetTree) return;
 
+	int32 ConfiguredCount = 0;
+
 	// Set all existing child widgets (SizeBox, Border, GridCanvas etc.) to
 	// SelfHitTestInvisible — they remain visible but don't intercept mouse events.
 	// This ensures all events bubble up to GridInventoryWidget::NativeOnMouseButtonDown.
-	WidgetTree->ForEachWidget([this](UWidget* Widget)
+	WidgetTree->ForEachWidget([this, &ConfiguredCount](UWidget* Widget)
 	{
 		if (Widget && Widget != this)
 		{
 			Widget->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+			ConfiguredCount++;
+			UE_LOG(LogTemp, Log, TEXT("[GridInventory] SetupHitTest: '%s' → SelfHitTestInvisible"),
+				*Widget->GetName());
 		}
 	});
+
+	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SetupHitTestConfiguration — %d child widgets configured"), ConfiguredCount);
 }
 
 FReply UGridInventoryWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] MouseDown — InventoryComponent=%s, GridCanvas=%s"),
+		InventoryComponent ? TEXT("OK") : TEXT("NULL"),
+		GridCanvas ? TEXT("OK") : TEXT("NULL"));
+
 	if (!InventoryComponent || !GridCanvas)
 	{
-		return FReply::Unhandled();
+		return FReply::Handled();
 	}
 
 	const FIntPoint Cell = ScreenToCell(InMouseEvent.GetScreenSpacePosition());
