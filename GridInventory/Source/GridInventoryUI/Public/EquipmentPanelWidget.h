@@ -31,9 +31,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equipment Panel|Config")
 	float EquipmentSlotSize;
 
-	/** Widget class for individual equipment slots */
+	/** Widget class for individual equipment slots (soft ref — no hard package dependency) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equipment Panel|Config")
-	TSubclassOf<UEquipmentSlotWidget> SlotWidgetClass;
+	TSoftClassPtr<UEquipmentSlotWidget> SlotWidgetClass;
 
 	/** Container widget for slot widgets (VerticalBox, WrapBox, etc.) */
 	UPROPERTY(BlueprintReadWrite, meta = (BindWidget, OptionalWidget = true), Category = "Equipment Panel|Widgets")
@@ -69,6 +69,11 @@ private:
 	UPROPERTY()
 	TArray<UEquipmentSlotWidget*> SlotWidgets;
 
+	/** Cached resolved class from TSoftClassPtr */
+	UPROPERTY()
+	UClass* ResolvedSlotClass;
+
+	UClass* GetResolvedSlotClass();
 	void ClearSlotWidgets();
 	void CreateSlotWidgets();
 };

@@ -47,7 +47,7 @@ void UContainerPanelWidget::OpenContainer(AInventoryContainer* Container, UGridI
 	// Configure player grid
 	if (PlayerGrid)
 	{
-		if (SlotWidgetClass)
+		if (!SlotWidgetClass.IsNull())
 		{
 			PlayerGrid->SlotWidgetClass = SlotWidgetClass;
 		}
@@ -58,7 +58,7 @@ void UContainerPanelWidget::OpenContainer(AInventoryContainer* Container, UGridI
 	// Configure container grid
 	if (ContainerGrid)
 	{
-		if (SlotWidgetClass)
+		if (!SlotWidgetClass.IsNull())
 		{
 			ContainerGrid->SlotWidgetClass = SlotWidgetClass;
 		}

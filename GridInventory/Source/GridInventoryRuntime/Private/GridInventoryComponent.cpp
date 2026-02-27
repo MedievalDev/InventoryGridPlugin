@@ -8,6 +8,8 @@
 #include "RuntimeItemDefinition.h"
 #include "Net/UnrealNetwork.h"
 #include "Kismet/GameplayStatics.h"
+#include "Engine/AssetManager.h"
+#include "Engine/StreamableManager.h"
 
 UGridInventoryComponent::UGridInventoryComponent()
 	: GridWidth(10)
@@ -428,6 +430,75 @@ AActor* UGridInventoryComponent::DropItem(FGuid UniqueID, FVector SpawnLocation,
 
 	OnItemDropped.Broadcast(DroppedCopy, SpawnedActor);
 	return SpawnedActor;
+}
+
+void UGridInventoryComponent::DropItemAsync(FGuid UniqueID, FVector SpawnLocation, FRotator SpawnRotation, int32 Count)
+{
+	if (!UniqueID.IsValid()) return;
+
+	const int32 Index = FindItemIndex(UniqueID);
+	if (Index == INDEX_NONE) return;
+
+	FInventoryItemInstance& Item = Items[Index];
+	if (!Item.ItemDef) return;
+
+	const int32 DropCount = (Count <= 0) ? Item.StackCount : FMath::Min(Count, Item.StackCount);
+
+	// Capture data before removing from inventory
+	FInventoryItemInstance DroppedCopy = Item;
+	DroppedCopy.StackCount = DropCount;
+	TSoftClassPtr<AActor> WorldActorClass = Item.ItemDef->WorldActorClass;
+
+	// Remove from inventory immediately (no hitch)
+	Internal_RemoveItem(UniqueID, DropCount);
+	RecalculateWeight();
+	BroadcastChanged();
+
+	// Async load world actor class — spawn in callback on game thread
+	if (!WorldActorClass.IsNull())
+	{
+		TWeakObjectPtr<UGridInventoryComponent> WeakThis(this);
+		FVector CapturedLoc = SpawnLocation;
+		FRotator CapturedRot = SpawnRotation;
+
+		// Check if already loaded (common case — avoids async overhead)
+		UClass* AlreadyLoaded = WorldActorClass.Get();
+		if (AlreadyLoaded)
+		{
+			UWorld* World = GetWorld();
+			if (World)
+			{
+				FActorSpawnParameters Params;
+				Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+				AActor* SpawnedActor = World->SpawnActor<AActor>(AlreadyLoaded, CapturedLoc, CapturedRot, Params);
+				OnItemDropped.Broadcast(DroppedCopy, SpawnedActor);
+			}
+			return;
+		}
+
+		// Async load path — no game thread hitch
+		FStreamableManager& StreamableManager = UAssetManager::GetStreamableManager();
+		StreamableManager.RequestAsyncLoad(WorldActorClass.ToSoftObjectPath(),
+			FStreamableDelegate::CreateLambda([WeakThis, DroppedCopy, CapturedLoc, CapturedRot, WorldActorClass]()
+			{
+				if (!WeakThis.IsValid()) return;
+
+				UClass* LoadedClass = WorldActorClass.Get();
+				UWorld* World = WeakThis->GetWorld();
+				if (LoadedClass && World)
+				{
+					FActorSpawnParameters Params;
+					Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+					AActor* SpawnedActor = World->SpawnActor<AActor>(LoadedClass, CapturedLoc, CapturedRot, Params);
+					WeakThis->OnItemDropped.Broadcast(DroppedCopy, SpawnedActor);
+				}
+			})
+		);
+	}
+	else
+	{
+		OnItemDropped.Broadcast(DroppedCopy, nullptr);
+	}
 }
 
 bool UGridInventoryComponent::PickupItem(UInventoryItemDefinition* ItemDef, int32 Count, AActor* WorldActor)

@@ -39,9 +39,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Container Panel|Config")
 	float CellSize;
 
-	/** Slot widget class for both grids */
+	/** Slot widget class for both grids (soft ref — no hard package dependency) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Container Panel|Config")
-	TSubclassOf<class UInventorySlotWidget> SlotWidgetClass;
+	TSoftClassPtr<class UInventorySlotWidget> SlotWidgetClass;
 
 	// ========================
 	// Bound Widgets

@@ -34,8 +34,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid Inventory|Config")
 	float CellSize;
 
+	/** Soft class reference — avoids hard ref to Blueprint package at load time */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid Inventory|Config")
-	TSubclassOf<UInventorySlotWidget> SlotWidgetClass;
+	TSoftClassPtr<UInventorySlotWidget> SlotWidgetClass;
 
 	/** Extra rows/columns rendered outside viewport as buffer */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid Inventory|Config", meta = (ClampMin = "1", ClampMax = "10"))
@@ -177,6 +178,15 @@ private:
 	void PreloadVisibleIcons();
 	/** Get a cached texture (returns nullptr if not yet loaded) */
 	UTexture2D* GetCachedIcon(const TSoftObjectPtr<UTexture2D>& SoftIcon) const;
+
+	/** Cached slot widget UClass — resolved from TSoftClassPtr on first use */
+	UPROPERTY()
+	UClass* ResolvedSlotWidgetClass;
+	UClass* GetSlotWidgetClass();
+
+	/** Cached grid line dimensions to avoid recreating unchanged lines */
+	int32 CachedGridLineWidth;
+	int32 CachedGridLineHeight;
 
 	UFUNCTION()
 	void OnInventoryChanged();

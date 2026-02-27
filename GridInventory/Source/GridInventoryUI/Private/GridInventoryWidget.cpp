@@ -26,6 +26,9 @@ void UGridInventoryWidget::NativeConstruct()
 	VisibleMin = FIntPoint::ZeroValue;
 	VisibleMax = FIntPoint::ZeroValue;
 	HoveredCell = FIntPoint(-1, -1);
+	ResolvedSlotWidgetClass = nullptr;
+	CachedGridLineWidth = 0;
+	CachedGridLineHeight = 0;
 
 	// Make this widget hittable and focusable — grid handles all mouse events
 	bIsFocusable = true;
@@ -188,13 +191,15 @@ void UGridInventoryWidget::OnItemRightClicked_Implementation(const FInventoryIte
 {
 	CloseContextMenu();
 
+	// Create fresh each time — WidgetTree::RootWidget can't be safely reassigned
+	// without orphaning old Slate widgets. For a user-triggered action (right-click)
+	// the allocation overhead is negligible.
 	ActiveContextMenu = CreateWidget<UInventoryContextMenuWidget>(GetOwningPlayer());
 	if (ActiveContextMenu)
 	{
 		ActiveContextMenu->InitMenu(Item, InventoryComponent);
 		ActiveContextMenu->AddToViewport(100);
 
-		// Position at mouse cursor
 		APlayerController* PC = GetOwningPlayer();
 		if (PC)
 		{
@@ -547,9 +552,10 @@ UInventorySlotWidget* UGridInventoryWidget::AcquireSlot()
 	}
 	else
 	{
-		// Create new
-		InvSlot = SlotWidgetClass
-			? CreateWidget<UInventorySlotWidget>(this, SlotWidgetClass)
+		// Create new — use resolved soft class (avoids hard ref)
+		UClass* SlotClass = GetSlotWidgetClass();
+		InvSlot = SlotClass
+			? CreateWidget<UInventorySlotWidget>(this, SlotClass)
 			: CreateWidget<UInventorySlotWidget>(this);
 
 		if (InvSlot && GridCanvas)
@@ -734,11 +740,24 @@ void UGridInventoryWidget::ClearItemVisuals()
 
 void UGridInventoryWidget::CreateGridLines()
 {
-	ClearGridLines();
-	if (!bShowGridLines || !InventoryComponent || !GridCanvas) return;
+	if (!bShowGridLines || !InventoryComponent || !GridCanvas)
+	{
+		ClearGridLines();
+		return;
+	}
 
 	const int32 GW = InventoryComponent->GridWidth;
 	const int32 GH = InventoryComponent->GridHeight;
+
+	// Skip rebuild if dimensions haven't changed — avoids destroying/recreating 160+ Image widgets
+	if (GW == CachedGridLineWidth && GH == CachedGridLineHeight && GridLineWidgets.Num() > 0)
+	{
+		return;
+	}
+
+	ClearGridLines();
+	CachedGridLineWidth = GW;
+	CachedGridLineHeight = GH;
 	const float TotalW = GW * CellSize;
 	const float TotalH = GH * CellSize;
 
@@ -811,12 +830,19 @@ void UGridInventoryWidget::PreloadVisibleIcons()
 	{
 		if (!Item.IsValid() || !Item.ItemDef || Item.ItemDef->Icon.IsNull()) continue;
 
+		// Only preload icons for items overlapping the visible viewport
+		// This avoids loading textures for hundreds of off-screen items
+		const FIntPoint Pos = Item.GridPosition;
+		const FIntPoint Size = Item.GetEffectiveSize();
+		if (Pos.X + Size.X <= VisibleMin.X || Pos.X >= VisibleMax.X) continue;
+		if (Pos.Y + Size.Y <= VisibleMin.Y || Pos.Y >= VisibleMax.Y) continue;
+
 		const FSoftObjectPath Path = Item.ItemDef->Icon.ToSoftObjectPath();
 
-		// Skip already cached
+		// Skip already cached — O(1) hash lookup
 		if (IconCache.Contains(Path)) continue;
 
-		// Check if already loaded in memory
+		// Check if already loaded in memory (from another source)
 		UTexture2D* AlreadyLoaded = Item.ItemDef->Icon.Get();
 		if (AlreadyLoaded)
 		{
@@ -882,6 +908,23 @@ UTexture2D* UGridInventoryWidget::GetCachedIcon(const TSoftObjectPtr<UTexture2D>
 	}
 
 	return nullptr;
+}
+
+UClass* UGridInventoryWidget::GetSlotWidgetClass()
+{
+	if (ResolvedSlotWidgetClass) return ResolvedSlotWidgetClass;
+
+	if (!SlotWidgetClass.IsNull())
+	{
+		// Try to get already-loaded class first (no blocking)
+		ResolvedSlotWidgetClass = SlotWidgetClass.Get();
+		if (!ResolvedSlotWidgetClass)
+		{
+			// Synchronous load only on first access — subsequent calls use cached pointer
+			ResolvedSlotWidgetClass = SlotWidgetClass.LoadSynchronous();
+		}
+	}
+	return ResolvedSlotWidgetClass;
 }
 
 void UGridInventoryWidget::OnInventoryChanged()

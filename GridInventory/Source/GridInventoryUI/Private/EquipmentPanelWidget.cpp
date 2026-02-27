@@ -102,8 +102,9 @@ void UEquipmentPanelWidget::CreateSlotWidgets()
 
 	for (const FEquipmentSlotDefinition& Def : Defs)
 	{
-		UEquipmentSlotWidget* SlotW = SlotWidgetClass
-			? CreateWidget<UEquipmentSlotWidget>(this, SlotWidgetClass)
+		UClass* SlotClass = GetResolvedSlotClass();
+		UEquipmentSlotWidget* SlotW = SlotClass
+			? CreateWidget<UEquipmentSlotWidget>(this, SlotClass)
 			: CreateWidget<UEquipmentSlotWidget>(this);
 
 		if (!SlotW) continue;
@@ -124,4 +125,19 @@ void UEquipmentPanelWidget::CreateSlotWidgets()
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("[GridInventory] EquipmentPanel — Created %d slot widgets"), SlotWidgets.Num());
+}
+
+UClass* UEquipmentPanelWidget::GetResolvedSlotClass()
+{
+	if (ResolvedSlotClass) return ResolvedSlotClass;
+
+	if (!SlotWidgetClass.IsNull())
+	{
+		ResolvedSlotClass = SlotWidgetClass.Get();
+		if (!ResolvedSlotClass)
+		{
+			ResolvedSlotClass = SlotWidgetClass.LoadSynchronous();
+		}
+	}
+	return ResolvedSlotClass;
 }

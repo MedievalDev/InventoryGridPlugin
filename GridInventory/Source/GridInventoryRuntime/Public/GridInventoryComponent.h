@@ -135,6 +135,14 @@ public:
 	AActor* DropItem(FGuid UniqueID, FVector SpawnLocation, FRotator SpawnRotation, int32 Count = 0);
 
 	/**
+	 * Drop item with async world actor class loading.
+	 * Removes item immediately but spawns the world actor in a callback
+	 * once the class is loaded. No game-thread hitch.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|World")
+	void DropItemAsync(FGuid UniqueID, FVector SpawnLocation, FRotator SpawnRotation, int32 Count = 0);
+
+	/**
 	 * Pick up an item from the world into the inventory.
 	 * @param ItemDef The item definition to add
 	 * @param Count How many

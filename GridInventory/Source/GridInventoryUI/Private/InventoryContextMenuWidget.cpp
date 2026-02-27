@@ -103,16 +103,15 @@ void UInventoryContextMenuWidget::OnDropClicked()
 {
 	if (ContextInventory && ContextItem.UniqueID.IsValid())
 	{
-		// Try to drop in front of the player
+		// Use async drop to avoid blocking on WorldActorClass loading
 		APawn* Pawn = GetOwningPlayerPawn();
 		if (Pawn)
 		{
 			FVector DropLoc = Pawn->GetActorLocation() + Pawn->GetActorForwardVector() * 150.0f;
-			ContextInventory->DropItem(ContextItem.UniqueID, DropLoc, FRotator::ZeroRotator);
+			ContextInventory->DropItemAsync(ContextItem.UniqueID, DropLoc, FRotator::ZeroRotator);
 		}
 		else
 		{
-			// Fallback: just remove from inventory
 			ContextInventory->RemoveItem(ContextItem.UniqueID);
 		}
 	}
