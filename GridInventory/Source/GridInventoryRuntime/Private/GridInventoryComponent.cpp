@@ -873,14 +873,6 @@ FItemSaveEntry UGridInventoryComponent::CreateSaveEntry(const FInventoryItemInst
 	Entry.UniqueID = Item.UniqueID;
 	Entry.InstanceEffects = Item.InstanceEffects;
 
-	if (Item.SubInventory && Item.SubInventory->IsInitialized())
-	{
-		for (const FInventoryItemInstance& SubItem : Item.SubInventory->GetAllItems())
-		{
-			Entry.SubInventoryItems.Add(CreateSaveEntry(SubItem));
-		}
-	}
-
 	return Entry;
 }
 
@@ -944,28 +936,6 @@ bool UGridInventoryComponent::RestoreItemFromEntry(const FItemSaveEntry& Entry)
 	ItemIndexMap.Add(NewItem.UniqueID, Items.Num());
 	Items.Add(NewItem);
 
-	// Restore sub-inventory if this is a container item
-	if (Entry.SubInventoryItems.Num() > 0 && ItemDef->bIsContainer)
-	{
-		FInventoryItemInstance& AddedItem = Items.Last();
-		UItemContainerInventory* SubInv = AddedItem.GetOrCreateSubInventory(this);
-		if (SubInv)
-		{
-			for (const FItemSaveEntry& SubEntry : Entry.SubInventoryItems)
-			{
-				UInventoryItemDefinition* SubDef = nullptr;
-				if (!SubEntry.bIsRuntimeCreated)
-				{
-					SubDef = Cast<UInventoryItemDefinition>(SubEntry.ItemDefPath.TryLoad());
-				}
-				if (SubDef)
-				{
-					SubInv->TryAddItemAt(SubDef, SubEntry.GridPosition, SubEntry.bIsRotated, SubEntry.StackCount);
-				}
-			}
-		}
-	}
-
 	return true;
 }
 
@@ -980,6 +950,18 @@ UInventorySaveGame* UGridInventoryComponent::BuildSaveGameObject(int32 SlotIndex
 	for (const FInventoryItemInstance& Item : Items)
 	{
 		SaveGame->InventoryItems.Add(CreateSaveEntry(Item));
+
+		// Collect sub-inventory contents separately (avoid struct recursion)
+		if (Item.SubInventory && Item.SubInventory->IsInitialized() && Item.SubInventory->GetAllItems().Num() > 0)
+		{
+			FSubInventorySaveData SubData;
+			SubData.ParentItemID = Item.UniqueID;
+			for (const FInventoryItemInstance& SubItem : Item.SubInventory->GetAllItems())
+			{
+				SubData.Items.Add(CreateSaveEntry(SubItem));
+			}
+			SaveGame->SubInventories.Add(SubData);
+		}
 	}
 
 	if (GetOwner())
@@ -1042,6 +1024,32 @@ bool UGridInventoryComponent::ProcessLoadedSaveGame(UInventorySaveGame* SaveGame
 		if (RestoreItemFromEntry(Entry))
 		{
 			RestoredCount++;
+		}
+	}
+
+	// Restore sub-inventories (container item contents)
+	for (const FSubInventorySaveData& SubData : SaveGame->SubInventories)
+	{
+		const int32 ParentIdx = FindItemIndex(SubData.ParentItemID);
+		if (ParentIdx == INDEX_NONE) continue;
+
+		FInventoryItemInstance& ParentItem = Items[ParentIdx];
+		if (!ParentItem.ItemDef || !ParentItem.ItemDef->bIsContainer) continue;
+
+		UItemContainerInventory* SubInv = ParentItem.GetOrCreateSubInventory(this);
+		if (!SubInv) continue;
+
+		for (const FItemSaveEntry& SubEntry : SubData.Items)
+		{
+			UInventoryItemDefinition* SubDef = nullptr;
+			if (!SubEntry.bIsRuntimeCreated)
+			{
+				SubDef = Cast<UInventoryItemDefinition>(SubEntry.ItemDefPath.TryLoad());
+			}
+			if (SubDef)
+			{
+				SubInv->TryAddItemAt(SubDef, SubEntry.GridPosition, SubEntry.bIsRotated, SubEntry.StackCount);
+			}
 		}
 	}
 

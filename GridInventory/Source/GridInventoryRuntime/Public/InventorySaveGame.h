@@ -52,10 +52,6 @@ struct FItemSaveEntry
 	UPROPERTY()
 	TArray<FItemEffectValue> InstanceEffects;
 
-	/** Sub-inventory items (for container items like herb pouches) */
-	UPROPERTY()
-	TArray<FItemSaveEntry> SubInventoryItems;
-
 	FItemSaveEntry()
 		: bIsRuntimeCreated(false)
 		, bIsRotated(false)
@@ -63,6 +59,24 @@ struct FItemSaveEntry
 		, CurrentClassLevel(1)
 	{
 	}
+};
+
+/**
+ * Save data for a container item's sub-inventory (e.g. herb pouch contents).
+ * Stored separately to avoid struct recursion (UE4.27 UHT limitation).
+ */
+USTRUCT()
+struct FSubInventorySaveData
+{
+	GENERATED_BODY()
+
+	/** UniqueID of the container item these sub-items belong to */
+	UPROPERTY()
+	FGuid ParentItemID;
+
+	/** Items inside this container */
+	UPROPERTY()
+	TArray<FItemSaveEntry> Items;
 };
 
 /**
@@ -132,6 +146,10 @@ public:
 	/** All items in the player inventory */
 	UPROPERTY()
 	TArray<FItemSaveEntry> InventoryItems;
+
+	/** Sub-inventory contents for container items (herb pouches, etc.) */
+	UPROPERTY()
+	TArray<FSubInventorySaveData> SubInventories;
 
 	/** Equipment slot IDs (parallel array with EquipmentItems) */
 	UPROPERTY()
