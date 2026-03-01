@@ -95,7 +95,7 @@ public:
 	/**
 	 * Requirements the player must meet to equip or use this item.
 	 * Each entry is a stat name + minimum value.
-	 * The EquipmentComponent checks these via the OnGetPlayerStat delegate.
+	 * The EquipmentComponent checks these against its PlayerStats map.
 	 *
 	 * Examples:
 	 *   "Level" >= 8, "Staerke" >= 10, "Geschicklichkeit" >= 5

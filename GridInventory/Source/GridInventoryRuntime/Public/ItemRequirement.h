@@ -15,8 +15,8 @@
  *   RequirementID: "Geschicklichkeit", MinValue: 5
  *   RequirementID: "Intelligenz",     MinValue: 15
  *
- * The EquipmentComponent asks your Blueprint for the player's current
- * stat value via the OnGetPlayerStat delegate.
+ * The EquipmentComponent checks these against its PlayerStats map.
+ * Set player stats via SetPlayerStat("Level", 8) in Blueprint.
  */
 USTRUCT(BlueprintType)
 struct GRIDINVENTORYRUNTIME_API FItemRequirement

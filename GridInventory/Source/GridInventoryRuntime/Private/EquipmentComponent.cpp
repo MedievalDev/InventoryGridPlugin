@@ -298,11 +298,12 @@ bool UEquipmentComponent::CanEquipInSlot(FName SlotID, UInventoryItemDefinition*
 bool UEquipmentComponent::MeetsRequirements(UInventoryItemDefinition* ItemDef) const
 {
 	if (!ItemDef || ItemDef->EquipRequirements.Num() == 0) return true;
-	if (!OnGetPlayerStat.IsBound()) return true;
+	if (PlayerStats.Num() == 0) return true;
 
 	for (const FItemRequirement& Req : ItemDef->EquipRequirements)
 	{
-		const float PlayerValue = OnGetPlayerStat.Execute(Req.RequirementID);
+		const float* FoundValue = PlayerStats.Find(Req.RequirementID);
+		const float PlayerValue = FoundValue ? *FoundValue : 0.0f;
 		if (PlayerValue < Req.MinValue) return false;
 	}
 	return true;
@@ -312,17 +313,29 @@ TArray<FItemRequirement> UEquipmentComponent::GetUnmetRequirements(UInventoryIte
 {
 	TArray<FItemRequirement> Unmet;
 	if (!ItemDef || ItemDef->EquipRequirements.Num() == 0) return Unmet;
-	if (!OnGetPlayerStat.IsBound()) return Unmet;
+	if (PlayerStats.Num() == 0) return Unmet;
 
 	for (const FItemRequirement& Req : ItemDef->EquipRequirements)
 	{
-		const float PlayerValue = OnGetPlayerStat.Execute(Req.RequirementID);
+		const float* FoundValue = PlayerStats.Find(Req.RequirementID);
+		const float PlayerValue = FoundValue ? *FoundValue : 0.0f;
 		if (PlayerValue < Req.MinValue)
 		{
 			Unmet.Add(Req);
 		}
 	}
 	return Unmet;
+}
+
+void UEquipmentComponent::SetPlayerStat(FName StatID, float Value)
+{
+	PlayerStats.FindOrAdd(StatID) = Value;
+}
+
+float UEquipmentComponent::GetPlayerStat(FName StatID) const
+{
+	const float* Found = PlayerStats.Find(StatID);
+	return Found ? *Found : 0.0f;
 }
 
 FName UEquipmentComponent::FindEmptySlotForItem(UInventoryItemDefinition* ItemDef) const

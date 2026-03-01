@@ -17,13 +17,6 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnItemUnequipped, FName, SlotID, c
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnEquipmentChanged);
 
 /**
- * Delegate that the EquipmentComponent calls to query a player stat value.
- * Bind this in Blueprint to provide your own attribute values.
- * Return the current value of the requested stat (e.g. "Level" -> 8, "Staerke" -> 12).
- */
-DECLARE_DYNAMIC_DELEGATE_ReturnVal_OneParam(float, FGetPlayerStatDelegate, FName, StatID);
-
-/**
  * Equipment component that manages named equipment slots.
  * Define slots in the editor array, then equip/unequip items.
  *
@@ -75,22 +68,25 @@ public:
 	// ========================
 
 	/**
-	 * Bind this delegate to a Blueprint function that returns the player's
-	 * current stat value for a given stat name.
-	 *
-	 * Blueprint setup:
-	 *   Bind Event to OnGetPlayerStat → Custom Event with return value
-	 *   Switch on StatID: "Level" → PlayerLevel, "Staerke" → Strength, etc.
-	 *
-	 * If not bound, all requirement checks pass (no restrictions).
+	 * Player stat values for requirement checks.
+	 * Set these from Blueprint via SetPlayerStat (e.g. "Level" = 8, "Staerke" = 12).
+	 * If empty, all requirement checks pass (no restrictions).
 	 */
-	UPROPERTY(BlueprintReadWrite, Category = "Equipment|Requirements")
-	FGetPlayerStatDelegate OnGetPlayerStat;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equipment|Requirements")
+	TMap<FName, float> PlayerStats;
+
+	/** Set a player stat value (e.g. call when player levels up) */
+	UFUNCTION(BlueprintCallable, Category = "Equipment|Requirements")
+	void SetPlayerStat(FName StatID, float Value);
+
+	/** Get a player stat value (returns 0 if not set) */
+	UFUNCTION(BlueprintPure, Category = "Equipment|Requirements")
+	float GetPlayerStat(FName StatID) const;
 
 	/**
 	 * Check if the player meets all requirements for an item.
-	 * Queries OnGetPlayerStat for each requirement on the item.
-	 * Returns true if all requirements are met, or if no delegate is bound.
+	 * Queries PlayerStats map for each requirement on the item.
+	 * Returns true if all requirements are met, or if PlayerStats is empty.
 	 */
 	UFUNCTION(BlueprintPure, Category = "Equipment|Requirements")
 	bool MeetsRequirements(UInventoryItemDefinition* ItemDef) const;
