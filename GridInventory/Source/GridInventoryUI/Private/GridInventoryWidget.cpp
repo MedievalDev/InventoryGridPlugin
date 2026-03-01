@@ -37,10 +37,16 @@ void UGridInventoryWidget::NativeConstruct()
 	CachedInventoryWidth = 0;
 	CachedInventoryHeight = 0;
 	bPendingDragCtrl = false;
+	bPendingDragAlt = false;
 	bShowingSplitSlider = false;
 	SplitSliderWidget = nullptr;
 	SplitSliderCountLabel = nullptr;
 	PendingSplitCount = 0;
+	DragHiddenItemID.Invalidate();
+	bPendingDropSplit = false;
+	DropSplitItemID.Invalidate();
+	DropSplitRotated = false;
+	DropSplitSourceInventory = nullptr;
 
 	// Make this widget hittable and focusable — grid handles all mouse events
 	bIsFocusable = true;
@@ -403,17 +409,11 @@ FReply UGridInventoryWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry
 			const bool bCtrl = InMouseEvent.IsControlDown();
 			const bool bAlt = InMouseEvent.IsAltDown();
 
-			// Alt+Click on stackable item: show split slider
-			if (bAlt && Item.ItemDef->bCanStack && Item.StackCount > 1)
-			{
-				ShowSplitSlider(Item, Cell);
-				return FReply::Handled();
-			}
-
 			// Store drag info for NativeOnDragDetected
 			PendingDragCell = Cell;
 			PendingDragItemID = Item.UniqueID;
 			bPendingDragCtrl = bCtrl;
+			bPendingDragAlt = bAlt;
 			OnItemClicked(Item, CellX, CellY);
 
 			// UE 4.27: use DetectDrag instead of CaptureMouse
@@ -501,14 +501,22 @@ void UGridInventoryWidget::NativeOnDragDetected(const FGeometry& InGeometry, con
 	UInventoryDragDropOperation* DragOp = NewObject<UInventoryDragDropOperation>();
 	DragOp->DraggedItem = Item;
 	DragOp->SourceInventory = InventoryComponent;
+	DragOp->SourceWidget = this;
 	DragOp->bDragRotated = false;
+	DragOp->bAltSplitDrag = false;
 	DragOp->GrabOffset = PendingDragCell - Item.GridPosition;
 
+	// Alt+drag: pick up full stack, split decision happens on drop
+	if (bPendingDragAlt && Item.ItemDef->bCanStack && Item.StackCount > 1)
+	{
+		DragOp->DragCount = 0;
+		DragOp->bAltSplitDrag = true;
+	}
 	// Stack-splitting logic:
-	// - PendingSplitCount > 0: from slider (Alt+Click)
+	// - PendingSplitCount > 0: from previous slider
 	// - Ctrl: entire stack
 	// - Default: pick up 1 from stackable items
-	if (PendingSplitCount > 0 && PendingSplitCount < Item.StackCount)
+	else if (PendingSplitCount > 0 && PendingSplitCount < Item.StackCount)
 	{
 		DragOp->DragCount = PendingSplitCount;
 		PendingSplitCount = 0;
@@ -521,6 +529,7 @@ void UGridInventoryWidget::NativeOnDragDetected(const FGeometry& InGeometry, con
 	{
 		DragOp->DragCount = 0; // 0 = entire stack
 	}
+	bPendingDragAlt = false;
 
 	// Create drag visual with correct stack count
 	FInventoryItemInstance VisualItem = Item;
@@ -531,20 +540,39 @@ void UGridInventoryWidget::NativeOnDragDetected(const FGeometry& InGeometry, con
 	UWidget* Visual = CreateItemVisual(VisualItem);
 	if (Visual)
 	{
-		DragOp->DefaultDragVisual = Visual;
-		// CenterCenter pivot is reliable in UE4.27; offset shifts grab point to cursor
 		const FIntPoint EffSize = DragOp->GetEffectiveDragSize();
-		const float HalfW = EffSize.X * CellSize * 0.5f;
-		const float HalfH = EffSize.Y * CellSize * 0.5f;
+		const float PixelW = EffSize.X * CellSize;
+		const float PixelH = EffSize.Y * CellSize;
+
+		// Wrap in SizeBox with explicit dimensions so UE4's drag decorator
+		// knows the widget size on frame 1 (before any layout pass)
+		USizeBox* DragSizeBox = WidgetTree->ConstructWidget<USizeBox>();
+		DragSizeBox->SetWidthOverride(PixelW);
+		DragSizeBox->SetHeightOverride(PixelH);
+		DragSizeBox->AddChild(Visual);
+		DragOp->DefaultDragVisual = DragSizeBox;
+
+		// CenterCenter pivot + offset: cursor stays at grab cell center
+		const float HalfW = PixelW * 0.5f;
+		const float HalfH = PixelH * 0.5f;
 		const float GrabCenterX = (DragOp->GrabOffset.X + 0.5f) * CellSize;
 		const float GrabCenterY = (DragOp->GrabOffset.Y + 0.5f) * CellSize;
 		DragOp->Pivot = EDragPivot::CenterCenter;
 		DragOp->Offset = FVector2D(HalfW - GrabCenterX, HalfH - GrabCenterY);
 	}
 
-	// Remove the item from its current position so the grid shows it as free
-	// (if the drop fails, NativeOnDragCancelled should restore it)
 	OutOperation = DragOp;
+
+	// Hide original visual during drag (whole-stack moves only)
+	if (DragOp->DragCount == 0)
+	{
+		FItemVisualEntry* Entry = ActiveItemVisuals.Find(DragOp->DraggedItem.UniqueID);
+		if (Entry && Entry->Visual)
+		{
+			Entry->Visual->SetVisibility(ESlateVisibility::Collapsed);
+			DragHiddenItemID = DragOp->DraggedItem.UniqueID;
+		}
+	}
 
 	PendingDragItemID.Invalidate();
 }
@@ -573,12 +601,41 @@ void UGridInventoryWidget::NativeOnDragLeave(const FDragDropEvent& InDragDropEve
 	Super::NativeOnDragLeave(InDragDropEvent, InOperation);
 }
 
+void UGridInventoryWidget::NativeOnDragCancelled(const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation)
+{
+	ClearAllHighlights();
+	RestoreDragHiddenVisual();
+	Super::NativeOnDragCancelled(InDragDropEvent, InOperation);
+}
+
+void UGridInventoryWidget::RestoreDragHiddenVisual()
+{
+	if (DragHiddenItemID.IsValid())
+	{
+		FItemVisualEntry* Entry = ActiveItemVisuals.Find(DragHiddenItemID);
+		if (Entry && Entry->Visual)
+		{
+			Entry->Visual->SetVisibility(ESlateVisibility::HitTestInvisible);
+		}
+		DragHiddenItemID.Invalidate();
+	}
+}
+
+void UGridInventoryWidget::ClearDragHiddenVisual()
+{
+	DragHiddenItemID.Invalidate();
+}
+
 bool UGridInventoryWidget::NativeOnDrop(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation)
 {
 	ClearAllHighlights();
 
 	UInventoryDragDropOperation* DragOp = Cast<UInventoryDragDropOperation>(InOperation);
-	if (!DragOp || !InventoryComponent || !GridCanvas) return false;
+	if (!DragOp || !InventoryComponent || !GridCanvas)
+	{
+		RestoreDragHiddenVisual();
+		return false;
+	}
 
 	const FIntPoint Cell = ScreenToCell(InDragDropEvent.GetScreenSpacePosition());
 	const FIntPoint DropPos = Cell - DragOp->GrabOffset;
@@ -587,23 +644,88 @@ bool UGridInventoryWidget::NativeOnDrop(const FGeometry& InGeometry, const FDrag
 	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] Drop at Cell (%d, %d) → DropPos (%d, %d)"),
 		Cell.X, Cell.Y, DropPos.X, DropPos.Y);
 
+	// Alt+Split workflow: show slider at drop position
+	if (DragOp->bAltSplitDrag && DragOp->DraggedItem.ItemDef
+		&& DragOp->DraggedItem.ItemDef->bCanStack && DragOp->DraggedItem.StackCount > 1)
+	{
+		bool bCanPlace = InventoryComponent->CanPlaceAt(DragOp->DraggedItem.ItemDef, DropPos, bEffRot);
+		if (!bCanPlace)
+		{
+			RestoreDragHiddenVisual();
+			return false;
+		}
+
+		// Stack=2: only one possible split (1/1), skip slider
+		if (DragOp->DraggedItem.StackCount == 2)
+		{
+			DragHiddenItemID.Invalidate();
+			if (DragOp->SourceWidget && DragOp->SourceWidget != this)
+			{
+				DragOp->SourceWidget->ClearDragHiddenVisual();
+			}
+			if (DragOp->SourceInventory == InventoryComponent)
+			{
+				return InventoryComponent->SplitStack(DragOp->DraggedItem.UniqueID, 1, DropPos, bEffRot);
+			}
+			else if (DragOp->SourceInventory)
+			{
+				return DragOp->SourceInventory->TransferItemTo(
+					DragOp->DraggedItem.UniqueID, InventoryComponent, DropPos, bEffRot, 1);
+			}
+			return false;
+		}
+
+		// Show split slider at drop position
+		RestoreDragHiddenVisual();
+		if (DragOp->SourceWidget && DragOp->SourceWidget != this)
+		{
+			DragOp->SourceWidget->RestoreDragHiddenVisual();
+		}
+		bPendingDropSplit = true;
+		DropSplitItemID = DragOp->DraggedItem.UniqueID;
+		DropSplitPosition = DropPos;
+		DropSplitRotated = bEffRot;
+		DropSplitSourceInventory = DragOp->SourceInventory;
+		ShowSplitSlider(DragOp->DraggedItem, DropPos);
+		return true;
+	}
+
+	bool bSuccess = false;
+
 	if (DragOp->SourceInventory == InventoryComponent)
 	{
 		// Partial stack: split instead of move
 		if (DragOp->DragCount > 0 && DragOp->DragCount < DragOp->DraggedItem.StackCount)
 		{
-			return InventoryComponent->SplitStack(DragOp->DraggedItem.UniqueID, DragOp->DragCount, DropPos, bEffRot);
+			bSuccess = InventoryComponent->SplitStack(DragOp->DraggedItem.UniqueID, DragOp->DragCount, DropPos, bEffRot);
 		}
-		return InventoryComponent->MoveItem(DragOp->DraggedItem.UniqueID, DropPos, bEffRot);
+		else
+		{
+			bSuccess = InventoryComponent->MoveItem(DragOp->DraggedItem.UniqueID, DropPos, bEffRot);
+		}
 	}
-
-	if (DragOp->SourceInventory)
+	else if (DragOp->SourceInventory)
 	{
-		return DragOp->SourceInventory->TransferItemTo(
+		bSuccess = DragOp->SourceInventory->TransferItemTo(
 			DragOp->DraggedItem.UniqueID, InventoryComponent, DropPos, bEffRot, DragOp->DragCount);
 	}
 
-	return false;
+	if (bSuccess)
+	{
+		// Clear hidden state — OnInventoryChanged will rebuild visuals
+		DragHiddenItemID.Invalidate();
+		if (DragOp->SourceWidget && DragOp->SourceWidget != this)
+		{
+			DragOp->SourceWidget->ClearDragHiddenVisual();
+		}
+	}
+	else
+	{
+		// Drop failed — restore original visual
+		RestoreDragHiddenVisual();
+	}
+
+	return bSuccess;
 }
 
 // ============================================================================
@@ -784,6 +906,12 @@ void UGridInventoryWidget::RefreshVisibleItems()
 			? (GetCachedIcon(Item.ItemDef->Icon) != nullptr) : true;
 		Entry.Visual = SB;
 		ActiveItemVisuals.Add(Item.UniqueID, Entry);
+
+		// Keep item hidden if it's being dragged
+		if (Item.UniqueID == DragHiddenItemID && Entry.Visual)
+		{
+			Entry.Visual->SetVisibility(ESlateVisibility::Collapsed);
+		}
 	}
 
 	// Remove visuals for items that are no longer visible or no longer exist
@@ -1103,9 +1231,9 @@ void UGridInventoryWidget::ShowSplitSlider(const FInventoryItemInstance& Item, F
 	GridCanvas->AddChild(Background);
 	if (UCanvasPanelSlot* CS = Cast<UCanvasPanelSlot>(Background->Slot))
 	{
-		CS->SetAutoSize(true);
+		CS->SetAutoSize(false);
 		CS->SetPosition(FVector2D(Cell.X * CellSize, (Cell.Y - 1) * CellSize));
-		CS->SetSize(FVector2D(CellSize * 4, CellSize * 0.6f));
+		CS->SetSize(FVector2D(FMath::Max(CellSize * 4.0f, 256.0f), FMath::Max(CellSize * 0.75f, 48.0f)));
 	}
 
 	SplitSliderWidget = Background;
@@ -1121,6 +1249,8 @@ void UGridInventoryWidget::CloseSplitSlider()
 	}
 	bShowingSplitSlider = false;
 	SplitSliderItemID.Invalidate();
+	bPendingDropSplit = false;
+	DropSplitItemID.Invalidate();
 }
 
 void UGridInventoryWidget::OnSplitSliderValueChanged(float Value)
@@ -1142,15 +1272,27 @@ void UGridInventoryWidget::OnSplitSliderOKClicked()
 
 void UGridInventoryWidget::OnSplitSliderConfirmed(int32 Count)
 {
-	if (!InventoryComponent || !SplitSliderItemID.IsValid() || Count <= 0) return;
+	if (Count <= 0)
+	{
+		CloseSplitSlider();
+		return;
+	}
 
-	// Store the split count — will be used by next drag on this item
-	PendingSplitCount = Count;
-	PendingDragItemID = SplitSliderItemID;
-	PendingDragCell = SplitSliderCell;
-	bPendingDragCtrl = false;
+	// New workflow: directly execute split at the drop position
+	if (bPendingDropSplit && DropSplitSourceInventory && DropSplitItemID.IsValid())
+	{
+		if (DropSplitSourceInventory == InventoryComponent)
+		{
+			InventoryComponent->SplitStack(DropSplitItemID, Count, DropSplitPosition, DropSplitRotated);
+		}
+		else
+		{
+			DropSplitSourceInventory->TransferItemTo(DropSplitItemID, InventoryComponent, DropSplitPosition, DropSplitRotated, Count);
+		}
+		UE_LOG(LogTemp, Log, TEXT("[GridInventory] SplitSlider: split %d at (%d,%d)"), Count, DropSplitPosition.X, DropSplitPosition.Y);
+	}
 
+	bPendingDropSplit = false;
+	DropSplitItemID.Invalidate();
 	CloseSplitSlider();
-
-	UE_LOG(LogTemp, Log, TEXT("[GridInventory] SplitSlider: %d selected — click and drag the item to place"), Count);
 }

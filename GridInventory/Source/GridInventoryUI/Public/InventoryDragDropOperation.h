@@ -8,6 +8,7 @@
 #include "InventoryDragDropOperation.generated.h"
 
 class UGridInventoryComponent;
+class UGridInventoryWidget;
 
 /**
  * Custom drag-drop operation for inventory items.
@@ -43,6 +44,14 @@ public:
 	/** If from equipment, which slot */
 	UPROPERTY(BlueprintReadWrite, Category = "Grid Inventory|Drag")
 	FName SourceEquipmentSlotID;
+
+	/** Whether Alt was held when drag started (triggers split-on-drop slider) */
+	UPROPERTY(BlueprintReadWrite, Category = "Grid Inventory|Drag")
+	bool bAltSplitDrag;
+
+	/** The grid widget that initiated this drag (for cross-inventory visual cleanup) */
+	UPROPERTY(BlueprintReadWrite, Category = "Grid Inventory|Drag")
+	UGridInventoryWidget* SourceWidget;
 
 	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Drag")
 	void ToggleRotation();

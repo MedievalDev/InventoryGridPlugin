@@ -101,6 +101,12 @@ public:
 	UFUNCTION(BlueprintNativeEvent, Category = "Grid Inventory|Widget")
 	UWidget* CreateItemVisual(const FInventoryItemInstance& Item);
 
+	/** Clear drag-hidden tracking after successful cross-inventory drop */
+	void ClearDragHiddenVisual();
+
+	/** Restore drag-hidden visual (for drag cancellation) */
+	void RestoreDragHiddenVisual();
+
 protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
@@ -115,6 +121,7 @@ protected:
 	virtual bool NativeOnDrop(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation) override;
 	virtual bool NativeOnDragOver(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation) override;
 	virtual void NativeOnDragLeave(const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation) override;
+	virtual void NativeOnDragCancelled(const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation) override;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Grid Inventory|Widget")
 	UGridInventoryComponent* InventoryComponent;
@@ -157,8 +164,12 @@ private:
 	FIntPoint PendingDragCell;
 	FGuid PendingDragItemID;
 	bool bPendingDragCtrl;
+	bool bPendingDragAlt;
 	FIntPoint HoveredCell;
 	FGuid HoveredItemID;
+
+	/** Item ID whose visual is hidden during an active whole-stack drag */
+	FGuid DragHiddenItemID;
 
 	// Stack-split slider state
 	bool bShowingSplitSlider;
@@ -167,6 +178,14 @@ private:
 	int32 SplitSliderCurrentCount;
 	FIntPoint SplitSliderCell;
 	int32 PendingSplitCount;
+
+	// Pending drop-split state (Alt+drag workflow)
+	bool bPendingDropSplit;
+	FGuid DropSplitItemID;
+	FIntPoint DropSplitPosition;
+	bool DropSplitRotated;
+	UPROPERTY()
+	UGridInventoryComponent* DropSplitSourceInventory;
 
 	UPROPERTY()
 	UWidget* SplitSliderWidget;
