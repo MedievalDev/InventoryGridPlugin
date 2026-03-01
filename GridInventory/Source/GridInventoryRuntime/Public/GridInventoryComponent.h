@@ -190,6 +190,25 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Merge")
 	bool CanMergeItems(FGuid TargetID, FGuid SacrificeID) const;
 
+	/**
+	 * Stack source items onto target (same inventory).
+	 * Both must be the same stackable ItemDef. Respects MaxStackSize.
+	 * If source is fully consumed, it is removed from inventory.
+	 * @param Count How many to move (0 = as many as will fit)
+	 * @return Number of items actually moved (0 on failure)
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Merge")
+	int32 StackOnto(FGuid SourceID, FGuid TargetID, int32 Count = 0);
+
+	/**
+	 * Stack items from an external inventory onto a target in this inventory.
+	 * Removes from source inventory, adds to target stack.
+	 * @param Count How many to move (0 = as many as will fit)
+	 * @return Number of items actually moved (0 on failure)
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Merge")
+	int32 StackOntoFrom(FGuid TargetID, UGridInventoryComponent* SourceInventory, FGuid SourceID, int32 Count = 0);
+
 	// ========================
 	// Consume / Drop / Merge Events
 	// ========================

@@ -590,8 +590,35 @@ bool UGridInventoryWidget::NativeOnDragOver(const FGeometry& InGeometry, const F
 	const bool bEffRot = DragOp->DraggedItem.bIsRotated != DragOp->bDragRotated;
 	const bool bCanPlace = InventoryComponent->CanPlaceAt(DragOp->DraggedItem.ItemDef, DropPos, bEffRot);
 
-	HighlightArea(DropPos, Size, bCanPlace);
+	if (bCanPlace)
+	{
+		HighlightArea(DropPos, Size, true);
+		return true;
+	}
 
+	// Check if hovering over a same-type item for stack merge or class-level merge
+	FInventoryItemInstance TargetItem = InventoryComponent->GetItemAtPosition(Cell);
+	if (TargetItem.IsValid() && TargetItem.UniqueID != DragOp->DraggedItem.UniqueID
+		&& TargetItem.ItemDef && TargetItem.ItemDef == DragOp->DraggedItem.ItemDef)
+	{
+		bool bCanMerge = false;
+		if (TargetItem.ItemDef->bCanStack && TargetItem.StackCount < TargetItem.ItemDef->MaxStackSize)
+		{
+			bCanMerge = true;
+		}
+		else if (TargetItem.ItemDef->bCanMergeUpgrade && TargetItem.CurrentClassLevel < TargetItem.ItemDef->MaxClassLevel)
+		{
+			bCanMerge = true;
+		}
+
+		if (bCanMerge)
+		{
+			HighlightArea(TargetItem.GridPosition, TargetItem.GetEffectiveSize(), true);
+			return true;
+		}
+	}
+
+	HighlightArea(DropPos, Size, false);
 	return true;
 }
 
@@ -690,6 +717,64 @@ bool UGridInventoryWidget::NativeOnDrop(const FGeometry& InGeometry, const FDrag
 		return true;
 	}
 
+	// Check for stack merge or class-level merge at drop position
+	FInventoryItemInstance TargetItem = InventoryComponent->GetItemAtPosition(Cell);
+	if (TargetItem.IsValid() && TargetItem.UniqueID != DragOp->DraggedItem.UniqueID
+		&& TargetItem.ItemDef && TargetItem.ItemDef == DragOp->DraggedItem.ItemDef)
+	{
+		// Stack merge (stackable items like herbs)
+		if (TargetItem.ItemDef->bCanStack && TargetItem.StackCount < TargetItem.ItemDef->MaxStackSize)
+		{
+			int32 Moved = 0;
+			if (DragOp->SourceInventory == InventoryComponent)
+			{
+				Moved = InventoryComponent->StackOnto(DragOp->DraggedItem.UniqueID, TargetItem.UniqueID, DragOp->DragCount);
+			}
+			else if (DragOp->SourceInventory)
+			{
+				Moved = InventoryComponent->StackOntoFrom(TargetItem.UniqueID, DragOp->SourceInventory, DragOp->DraggedItem.UniqueID, DragOp->DragCount);
+			}
+
+			if (Moved > 0)
+			{
+				UE_LOG(LogTemp, Log, TEXT("[GridInventory] StackMerge: moved %d onto target at (%d,%d)"), Moved, TargetItem.GridPosition.X, TargetItem.GridPosition.Y);
+				DragHiddenItemID.Invalidate();
+				if (DragOp->SourceWidget && DragOp->SourceWidget != this)
+				{
+					DragOp->SourceWidget->ClearDragHiddenVisual();
+				}
+				return true;
+			}
+			RestoreDragHiddenVisual();
+			return false;
+		}
+
+		// Class-level merge (non-stackable upgradeable items like swords)
+		if (TargetItem.ItemDef->bCanMergeUpgrade && TargetItem.CurrentClassLevel < TargetItem.ItemDef->MaxClassLevel)
+		{
+			bool bMerged = false;
+			if (DragOp->SourceInventory == InventoryComponent)
+			{
+				bMerged = InventoryComponent->MergeItems(TargetItem.UniqueID, DragOp->DraggedItem.UniqueID);
+			}
+			// Cross-inventory merge: not yet supported (both items must be in same inventory)
+
+			if (bMerged)
+			{
+				UE_LOG(LogTemp, Log, TEXT("[GridInventory] MergeUpgrade: class level now %d"), TargetItem.CurrentClassLevel + 1);
+				DragHiddenItemID.Invalidate();
+				if (DragOp->SourceWidget && DragOp->SourceWidget != this)
+				{
+					DragOp->SourceWidget->ClearDragHiddenVisual();
+				}
+				return true;
+			}
+			RestoreDragHiddenVisual();
+			return false;
+		}
+	}
+
+	// Normal move / transfer
 	bool bSuccess = false;
 
 	if (DragOp->SourceInventory == InventoryComponent)

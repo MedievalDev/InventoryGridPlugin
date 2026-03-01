@@ -649,6 +649,77 @@ bool UGridInventoryComponent::MergeItems(FGuid TargetID, FGuid SacrificeID)
 	return true;
 }
 
+int32 UGridInventoryComponent::StackOnto(FGuid SourceID, FGuid TargetID, int32 Count)
+{
+	if (!SourceID.IsValid() || !TargetID.IsValid() || SourceID == TargetID) return 0;
+
+	const int32 SrcIdx = FindItemIndex(SourceID);
+	const int32 TgtIdx = FindItemIndex(TargetID);
+	if (SrcIdx == INDEX_NONE || TgtIdx == INDEX_NONE) return 0;
+
+	FInventoryItemInstance& Src = Items[SrcIdx];
+	FInventoryItemInstance& Tgt = Items[TgtIdx];
+
+	if (!Src.ItemDef || Src.ItemDef != Tgt.ItemDef) return 0;
+	if (!Src.ItemDef->bCanStack) return 0;
+	if (Tgt.StackCount >= Src.ItemDef->MaxStackSize) return 0;
+
+	const int32 Available = (Count <= 0) ? Src.StackCount : FMath::Min(Count, Src.StackCount);
+	const int32 CanFit = Src.ItemDef->MaxStackSize - Tgt.StackCount;
+	const int32 ToMove = FMath::Min(Available, CanFit);
+	if (ToMove <= 0) return 0;
+
+	Tgt.StackCount += ToMove;
+
+	if (ToMove >= Src.StackCount)
+	{
+		// Source fully consumed — remove from grid and items array
+		Grid.RemoveItemAt(SourceID, Src.GridPosition, Src.GetEffectiveSize());
+		FInventoryItemInstance Removed = Src;
+		SwapRemoveItemAtIndex(SrcIdx);
+		BroadcastItemRemoved(Removed);
+	}
+	else
+	{
+		Src.StackCount -= ToMove;
+	}
+
+	RecalculateWeight();
+	BroadcastChanged();
+	return ToMove;
+}
+
+int32 UGridInventoryComponent::StackOntoFrom(FGuid TargetID, UGridInventoryComponent* SourceInventory, FGuid SourceID, int32 Count)
+{
+	if (!SourceInventory || !TargetID.IsValid() || !SourceID.IsValid()) return 0;
+	if (SourceInventory == this) return StackOnto(SourceID, TargetID, Count);
+
+	const int32 TgtIdx = FindItemIndex(TargetID);
+	if (TgtIdx == INDEX_NONE) return 0;
+
+	FInventoryItemInstance& Tgt = Items[TgtIdx];
+	FInventoryItemInstance SrcItem = SourceInventory->GetItemByID(SourceID);
+	if (!SrcItem.IsValid()) return 0;
+
+	if (!Tgt.ItemDef || Tgt.ItemDef != SrcItem.ItemDef) return 0;
+	if (!Tgt.ItemDef->bCanStack) return 0;
+	if (Tgt.StackCount >= Tgt.ItemDef->MaxStackSize) return 0;
+
+	const int32 Available = (Count <= 0) ? SrcItem.StackCount : FMath::Min(Count, SrcItem.StackCount);
+	const int32 CanFit = Tgt.ItemDef->MaxStackSize - Tgt.StackCount;
+	const int32 ToMove = FMath::Min(Available, CanFit);
+	if (ToMove <= 0) return 0;
+
+	Tgt.StackCount += ToMove;
+	SourceInventory->Internal_RemoveItem(SourceID, ToMove);
+	SourceInventory->RecalculateWeight();
+	SourceInventory->BroadcastChanged();
+
+	RecalculateWeight();
+	BroadcastChanged();
+	return ToMove;
+}
+
 FInventoryItemInstance UGridInventoryComponent::GetItemByID(FGuid UniqueID) const
 {
 	const int32 Idx = FindItemIndex(UniqueID);
