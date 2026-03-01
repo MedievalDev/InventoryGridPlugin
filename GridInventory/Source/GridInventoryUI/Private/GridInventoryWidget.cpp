@@ -273,10 +273,19 @@ UWidget* UGridInventoryWidget::CreateItemVisual_Implementation(const FInventoryI
 
 	UImage* IconImage = WidgetTree->ConstructWidget<UImage>();
 
-	// Use cached icon (preloaded asynchronously) — no LoadSynchronous on UI thread
+	// Use cached icon (preloaded asynchronously), sync fallback if not ready
 	if (!Item.ItemDef->Icon.IsNull())
 	{
 		UTexture2D* CachedTex = GetCachedIcon(Item.ItemDef->Icon);
+		if (!CachedTex)
+		{
+			// Sync fallback — ensures icons always display on first frame
+			CachedTex = Item.ItemDef->Icon.LoadSynchronous();
+			if (CachedTex)
+			{
+				IconCache.Add(Item.ItemDef->Icon.ToSoftObjectPath(), CachedTex);
+			}
+		}
 		if (CachedTex)
 		{
 			IconImage->SetBrushFromTexture(CachedTex);
@@ -390,9 +399,8 @@ FReply UGridInventoryWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry
 	{
 		if (Item.IsValid())
 		{
-			const FModifierKeysState& Mods = InMouseEvent.GetModifierKeys();
-			const bool bCtrl = Mods.IsControlDown();
-			const bool bAlt = Mods.IsAltDown();
+			const bool bCtrl = InMouseEvent.IsControlDown();
+			const bool bAlt = InMouseEvent.IsAltDown();
 
 			// Alt+Click on stackable item: show split slider
 			if (bAlt && Item.ItemDef->bCanStack && Item.StackCount > 1)
@@ -523,11 +531,14 @@ void UGridInventoryWidget::NativeOnDragDetected(const FGeometry& InGeometry, con
 	if (Visual)
 	{
 		DragOp->DefaultDragVisual = Visual;
-		DragOp->Pivot = EDragPivot::TopLeft;
-		DragOp->Offset = FVector2D(
-			-DragOp->GrabOffset.X * CellSize,
-			-DragOp->GrabOffset.Y * CellSize
-		);
+		// CenterCenter pivot is reliable in UE4.27; offset shifts grab point to cursor
+		const FIntPoint EffSize = DragOp->GetEffectiveDragSize();
+		const float HalfW = EffSize.X * CellSize * 0.5f;
+		const float HalfH = EffSize.Y * CellSize * 0.5f;
+		const float GrabCenterX = (DragOp->GrabOffset.X + 0.5f) * CellSize;
+		const float GrabCenterY = (DragOp->GrabOffset.Y + 0.5f) * CellSize;
+		DragOp->Pivot = EDragPivot::CenterCenter;
+		DragOp->Offset = FVector2D(HalfW - GrabCenterX, HalfH - GrabCenterY);
 	}
 
 	// Remove the item from its current position so the grid shows it as free
