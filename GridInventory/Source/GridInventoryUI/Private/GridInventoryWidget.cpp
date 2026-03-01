@@ -15,6 +15,7 @@
 #include "Components/Slider.h"
 #include "Components/Border.h"
 #include "Components/HorizontalBox.h"
+#include "Components/HorizontalBoxSlot.h"
 #include "Components/Button.h"
 #include "Blueprint/WidgetTree.h"
 #include "Engine/StreamableManager.h"
