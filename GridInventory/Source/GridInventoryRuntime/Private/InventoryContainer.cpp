@@ -85,6 +85,8 @@ void AInventoryContainer::GenerateRandomDefaults()
 			TotalWeight += W;
 		}
 
+		if (ValidIndices.Num() == 0 || TotalWeight <= 0.0f) return;
+
 		// Weighted selection without replacement
 		for (int32 Picked = 0; Picked < NumToPick && ValidIndices.Num() > 0; ++Picked)
 		{

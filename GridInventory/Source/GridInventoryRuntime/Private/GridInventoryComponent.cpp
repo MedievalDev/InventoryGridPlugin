@@ -49,6 +49,12 @@ bool UGridInventoryComponent::TryAddItem(UInventoryItemDefinition* ItemDef, int3
 	// Currency items skip the grid — add BaseValue * Count directly to gold
 	if (ItemDef->bIsCurrency)
 	{
+		if (ItemDef->BaseValue <= 0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[GridInventory] Currency item '%s' has BaseValue 0!"),
+				*ItemDef->DisplayName.ToString());
+		}
+
 		const float GoldToAdd = static_cast<float>(ItemDef->BaseValue) * Count;
 		AddGold(GoldToAdd);
 		OnCurrencyCollected.Broadcast(ItemDef, Count, GoldToAdd);
@@ -145,6 +151,16 @@ int32 UGridInventoryComponent::TryAddItemsBatch(const TArray<FItemAddRequest>& R
 	for (const FItemAddRequest& Req : Requests)
 	{
 		if (!Req.ItemDef || Req.Count <= 0) continue;
+
+		// Currency items bypass the grid — add gold directly
+		if (Req.ItemDef->bIsCurrency)
+		{
+			const float GoldToAdd = static_cast<float>(Req.ItemDef->BaseValue) * Req.Count;
+			AddGold(GoldToAdd);
+			OnCurrencyCollected.Broadcast(Req.ItemDef, Req.Count, GoldToAdd);
+			AddedCount++;
+			continue;
+		}
 
 		int32 Remaining = Req.Count;
 
@@ -402,6 +418,31 @@ bool UGridInventoryComponent::ConsumeItem(FGuid UniqueID)
 		BroadcastChanged();
 	}
 
+	return true;
+}
+
+bool UGridInventoryComponent::SetItemInstanceEffect(FGuid UniqueID, FName EffectID, float Value)
+{
+	if (!UniqueID.IsValid() || EffectID == NAME_None) return false;
+
+	const int32 Index = FindItemIndex(UniqueID);
+	if (Index == INDEX_NONE) return false;
+
+	FInventoryItemInstance& Item = Items[Index];
+
+	// Update existing or add new
+	for (FItemEffectValue& Eff : Item.InstanceEffects)
+	{
+		if (Eff.EffectID == EffectID)
+		{
+			Eff.Value = Value;
+			BroadcastChanged();
+			return true;
+		}
+	}
+
+	Item.InstanceEffects.Add(FItemEffectValue(EffectID, Value));
+	BroadcastChanged();
 	return true;
 }
 
@@ -881,9 +922,22 @@ bool UGridInventoryComponent::RestoreItemFromEntry(const FItemSaveEntry& Entry)
 	const FIntPoint EffSize = ItemDef->GetEffectiveSize(NewItem.bIsRotated);
 	if (!Grid.PlaceItem(NewItem.UniqueID, NewItem.GridPosition, EffSize))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SaveLoad: Cannot place '%s' at (%d,%d)"),
-			*ItemDef->DisplayName.ToString(), NewItem.GridPosition.X, NewItem.GridPosition.Y);
-		return false;
+		// Saved position unavailable — try auto-placement as fallback
+		FGridPlacementResult AltSlot = Grid.FindFirstFreeSlot(EffSize, ItemDef->bCanRotate);
+		if (AltSlot.bSuccess)
+		{
+			Grid.PlaceItem(NewItem.UniqueID, AltSlot.Position, ItemDef->GetEffectiveSize(AltSlot.bRotated));
+			NewItem.GridPosition = AltSlot.Position;
+			NewItem.bIsRotated = AltSlot.bRotated;
+			UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SaveLoad: Repositioned '%s' to (%d,%d)"),
+				*ItemDef->DisplayName.ToString(), AltSlot.Position.X, AltSlot.Position.Y);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("[GridInventory] SaveLoad: LOST item '%s' — no space!"),
+				*ItemDef->DisplayName.ToString());
+			return false;
+		}
 	}
 
 	// Update index map BEFORE adding so the index is correct

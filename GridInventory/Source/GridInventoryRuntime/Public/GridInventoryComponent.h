@@ -105,6 +105,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Grid Inventory")
 	bool TransferItemTo(FGuid UniqueID, UGridInventoryComponent* TargetInventory, FIntPoint TargetPosition, bool bRotated, int32 Count = 0);
 
+	/**
+	 * Set an instance-specific effect override on an item.
+	 * Overrides the base effect value from the ItemDef for this specific item instance.
+	 * @param UniqueID The item to modify
+	 * @param EffectID The effect name (e.g. "Damage", "Armor")
+	 * @param Value The override value
+	 * @return true if the item was found and modified
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Effects")
+	bool SetItemInstanceEffect(FGuid UniqueID, FName EffectID, float Value);
+
 	// ========================
 	// Consume / Use
 	// ========================

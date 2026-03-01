@@ -53,6 +53,24 @@ FString URuntimeItemDefinition::ToJSON() const
 	Obj->SetStringField(TEXT("Sonstiges"), Sonstiges);
 	Obj->SetNumberField(TEXT("DurationMinutes"), DurationMinutes);
 
+	// Trade / Currency
+	Obj->SetNumberField(TEXT("BaseValue"), BaseValue);
+	Obj->SetBoolField(TEXT("bIsCurrency"), bIsCurrency);
+
+	// EquipRequirements
+	TArray<TSharedPtr<FJsonValue>> ReqArray;
+	for (const FItemRequirement& Req : EquipRequirements)
+	{
+		TSharedPtr<FJsonObject> ReqObj = MakeShareable(new FJsonObject());
+		ReqObj->SetStringField(TEXT("ID"), Req.RequirementID.ToString());
+		ReqObj->SetNumberField(TEXT("MinValue"), Req.MinValue);
+		ReqArray.Add(MakeShareable(new FJsonValueObject(ReqObj)));
+	}
+	if (ReqArray.Num() > 0)
+	{
+		Obj->SetArrayField(TEXT("EquipRequirements"), ReqArray);
+	}
+
 	// Base effects
 	TArray<TSharedPtr<FJsonValue>> EffectsArray;
 	for (const FItemEffectValue& Effect : BaseEffects)
@@ -142,6 +160,32 @@ URuntimeItemDefinition* URuntimeItemDefinition::FromJSON(UObject* Outer, const F
 	Obj->TryGetStringField(TEXT("Sonstiges"), Def->Sonstiges);
 	if (Obj->TryGetNumberField(TEXT("DurationMinutes"), TempNum))
 		Def->DurationMinutes = (float)TempNum;
+
+	// Trade / Currency
+	if (Obj->TryGetNumberField(TEXT("BaseValue"), TempNum))
+		Def->BaseValue = static_cast<int32>(TempNum);
+	Obj->TryGetBoolField(TEXT("bIsCurrency"), Def->bIsCurrency);
+
+	// EquipRequirements
+	const TArray<TSharedPtr<FJsonValue>>* ReqArray = nullptr;
+	if (Obj->TryGetArrayField(TEXT("EquipRequirements"), ReqArray))
+	{
+		for (const TSharedPtr<FJsonValue>& Val : *ReqArray)
+		{
+			const TSharedPtr<FJsonObject>& ReqObj = Val->AsObject();
+			if (!ReqObj.IsValid()) continue;
+
+			FString ReqID;
+			double ReqMinValue = 0;
+			ReqObj->TryGetStringField(TEXT("ID"), ReqID);
+			ReqObj->TryGetNumberField(TEXT("MinValue"), ReqMinValue);
+
+			if (!ReqID.IsEmpty())
+			{
+				Def->EquipRequirements.Add(FItemRequirement(FName(*ReqID), (float)ReqMinValue));
+			}
+		}
+	}
 
 	// Base effects
 	const TArray<TSharedPtr<FJsonValue>>* EffectsArray = nullptr;

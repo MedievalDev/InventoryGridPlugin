@@ -461,11 +461,7 @@ TArray<FItemEffectValue> UInventoryFunctionLibrary::GetAllItemEffects(const FInv
 bool UInventoryFunctionLibrary::SetInstanceEffect(UGridInventoryComponent* Inventory, FGuid UniqueID, FName EffectID, float Value)
 {
 	if (!Inventory || !UniqueID.IsValid()) return false;
-
-	// Note: To properly modify instance effects, GridInventoryComponent
-	// should expose a SetItemInstanceEffect() function for direct array access.
-	// This helper demonstrates the API pattern.
-	return false;
+	return Inventory->SetItemInstanceEffect(UniqueID, EffectID, Value);
 }
 
 FText UInventoryFunctionLibrary::GetItemDisplayName(const FInventoryItemInstance& Item)

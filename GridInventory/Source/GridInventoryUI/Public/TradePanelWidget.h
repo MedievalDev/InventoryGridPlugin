@@ -98,7 +98,7 @@ public:
 	 * @param MerchantName Display name for the merchant
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Trade Panel")
-	void OpenTrade(UGridInventoryComponent* PlayerInv, UGridInventoryComponent* MerchantInv, FText InMerchantName);
+	void OpenTrade(UGridInventoryComponent* PlayerInv, UGridInventoryComponent* MerchantInv, FText MerchantName);
 
 	/**
 	 * Open trade with a MerchantActor.
