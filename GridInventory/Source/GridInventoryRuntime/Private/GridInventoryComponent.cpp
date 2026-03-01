@@ -46,6 +46,18 @@ bool UGridInventoryComponent::TryAddItem(UInventoryItemDefinition* ItemDef, int3
 {
 	if (!ItemDef || Count <= 0) return false;
 
+	// Currency items skip the grid — add BaseValue * Count directly to gold
+	if (ItemDef->bIsCurrency)
+	{
+		const float GoldToAdd = static_cast<float>(ItemDef->BaseValue) * Count;
+		AddGold(GoldToAdd);
+		OnCurrencyCollected.Broadcast(ItemDef, Count, GoldToAdd);
+
+		UE_LOG(LogTemp, Log, TEXT("[GridInventory] Currency collected: %s x%d = +%.0f gold"),
+			*ItemDef->DisplayName.ToString(), Count, GoldToAdd);
+		return true;
+	}
+
 	if (GetOwnerRole() < ROLE_Authority)
 	{
 		ServerTryAddItem(ItemDef, Count);

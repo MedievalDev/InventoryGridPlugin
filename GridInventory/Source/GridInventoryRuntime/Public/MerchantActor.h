@@ -78,6 +78,21 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Merchant|Stock")
 	TArray<FRandomItemEntry> RandomStock;
 
+	/**
+	 * Minimum number of different items to pick from RandomStock.
+	 * 0 = roll each entry individually.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Merchant|Stock", meta = (ClampMin = "0"))
+	int32 MinRandomStock;
+
+	/**
+	 * Maximum number of different items to pick from RandomStock.
+	 * 0 = roll each entry individually.
+	 * If both > 0, picks Min..Max entries using SpawnChance as weight.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Merchant|Stock", meta = (ClampMin = "0"))
+	int32 MaxRandomStock;
+
 	// ========================
 	// Pricing
 	// ========================

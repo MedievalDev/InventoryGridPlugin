@@ -22,6 +22,8 @@ AInventoryContainer::AInventoryContainer()
 	DropWeightMultiplier = 1.0f;
 	LootLevel = 0;
 	bLootGenerated = false;
+	MinRandomItems = 0;
+	MaxRandomItems = 0;
 }
 
 void AInventoryContainer::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -51,19 +53,78 @@ void AInventoryContainer::BeginPlay()
 
 void AInventoryContainer::GenerateRandomDefaults()
 {
-	if (!InventoryComponent) return;
+	if (!InventoryComponent || RandomDefaultItems.Num() == 0) return;
 
-	for (const FRandomItemEntry& Entry : RandomDefaultItems)
+	const int32 EffectiveMin = FMath::Max(0, MinRandomItems);
+	const int32 EffectiveMax = FMath::Max(0, MaxRandomItems);
+
+	if (EffectiveMin > 0 || EffectiveMax > 0)
 	{
-		if (!Entry.ItemDef || Entry.SpawnChance <= 0.0f) continue;
+		// === Selection mode: pick Min..Max entries using SpawnChance as weight ===
+		const int32 ClampedMax = FMath::Min(EffectiveMax, RandomDefaultItems.Num());
+		const int32 ClampedMin = FMath::Min(EffectiveMin, ClampedMax);
+		const int32 NumToPick = FMath::RandRange(ClampedMin, ClampedMax);
 
-		// Multiply spawn chance by container's weight multiplier
-		const float AdjustedChance = FMath::Clamp(Entry.SpawnChance * DropWeightMultiplier, 0.0f, 1.0f);
+		if (NumToPick <= 0) return;
 
-		if (FMath::FRand() <= AdjustedChance)
+		// Build weighted pool (indices + weights)
+		TArray<int32> ValidIndices;
+		TArray<float> Weights;
+		float TotalWeight = 0.0f;
+
+		for (int32 i = 0; i < RandomDefaultItems.Num(); ++i)
 		{
-			const int32 Count = FMath::RandRange(Entry.MinCount, FMath::Max(Entry.MinCount, Entry.MaxCount));
-			InventoryComponent->TryAddItem(Entry.ItemDef, Count);
+			const FRandomItemEntry& Entry = RandomDefaultItems[i];
+			if (!Entry.ItemDef || Entry.SpawnChance <= 0.0f) continue;
+
+			const float W = Entry.SpawnChance * DropWeightMultiplier;
+			if (W <= 0.0f) continue;
+
+			ValidIndices.Add(i);
+			Weights.Add(W);
+			TotalWeight += W;
+		}
+
+		// Weighted selection without replacement
+		for (int32 Picked = 0; Picked < NumToPick && ValidIndices.Num() > 0; ++Picked)
+		{
+			float Roll = FMath::FRand() * TotalWeight;
+			int32 ChosenPoolIdx = ValidIndices.Num() - 1; // fallback to last
+
+			for (int32 j = 0; j < ValidIndices.Num(); ++j)
+			{
+				Roll -= Weights[j];
+				if (Roll <= 0.0f)
+				{
+					ChosenPoolIdx = j;
+					break;
+				}
+			}
+
+			const FRandomItemEntry& Chosen = RandomDefaultItems[ValidIndices[ChosenPoolIdx]];
+			const int32 Count = FMath::RandRange(Chosen.MinCount, FMath::Max(Chosen.MinCount, Chosen.MaxCount));
+			InventoryComponent->TryAddItem(Chosen.ItemDef, Count);
+
+			// Remove from pool (no duplicates)
+			TotalWeight -= Weights[ChosenPoolIdx];
+			ValidIndices.RemoveAtSwap(ChosenPoolIdx);
+			Weights.RemoveAtSwap(ChosenPoolIdx);
+		}
+	}
+	else
+	{
+		// === Individual roll mode: each entry rolls independently ===
+		for (const FRandomItemEntry& Entry : RandomDefaultItems)
+		{
+			if (!Entry.ItemDef || Entry.SpawnChance <= 0.0f) continue;
+
+			const float AdjustedChance = FMath::Clamp(Entry.SpawnChance * DropWeightMultiplier, 0.0f, 1.0f);
+
+			if (FMath::FRand() <= AdjustedChance)
+			{
+				const int32 Count = FMath::RandRange(Entry.MinCount, FMath::Max(Entry.MinCount, Entry.MaxCount));
+				InventoryComponent->TryAddItem(Entry.ItemDef, Count);
+			}
 		}
 	}
 }

@@ -499,6 +499,63 @@ Man kann `GenerateRandomDefaults()` auch manuell aufrufen, z.B. um Random Items 
 Get Container Reference → Generate Random Defaults
 ```
 
+### Min/Max Anzahl (Selektion statt Einzelwürfel)
+
+Standardmäßig wird jeder Eintrag **einzeln** gewürfelt (jeder hat seine eigene Chance).
+Mit **MinRandomItems** und **MaxRandomItems** kann man stattdessen festlegen, **wie viele** verschiedene Items aus der Liste ausgewählt werden. Die SpawnChance wird dann als **Gewichtung** verwendet.
+
+| Property | Wert | Beschreibung |
+|----------|------|-------------|
+| Min Random Items | 2 | Mindestens 2 verschiedene Items |
+| Max Random Items | 4 | Maximal 4 verschiedene Items |
+
+> **Beide auf 0** = altes Verhalten (jeder Eintrag würfelt einzeln).
+>
+> **Beispiel:** Liste mit 10 Items, Min 2, Max 4
+> → Es werden 2-4 Items zufällig ausgewählt (SpawnChance = Gewichtung).
+> Items mit höherer SpawnChance werden wahrscheinlicher gewählt.
+
+## 8.6 Währungs-Items (Goldmünzen etc.)
+
+Items können als **Währung** markiert werden. Diese werden NICHT ins Inventar gelegt — stattdessen wird der BaseValue × Menge direkt als Gold gutgeschrieben.
+
+### Item als Währung einrichten
+
+1. DataAsset erstellen (z.B. `DA_Goldmuenze`)
+2. Im Details-Panel:
+
+| Property | Wert |
+|----------|------|
+| Item ID | Goldmuenze |
+| Display Name | Goldmünze |
+| Base Value | 1 |
+| **bIs Currency** | **true** |
+
+### Wie es funktioniert
+
+```
+Spieler sammelt 10× DA_Goldmuenze ein
+  → TryAddItem prüft: bIsCurrency = true
+  → BaseValue (1) × Count (10) = 10
+  → AddGold(10) wird aufgerufen
+  → Item wird NICHT ins Inventar-Grid gelegt
+  → OnCurrencyCollected Event wird gefeuert
+```
+
+### Feedback anzeigen (Blueprint)
+
+```
+Event Begin Play
+  │
+  ├→ Get Grid Inventory Component
+  └→ Bind Event to On Currency Collected
+       └→ Custom Event (ItemDef, Count, GoldAdded)
+            └→ Show "+10 Gold" Popup (GoldAdded als Text)
+```
+
+> **Tipp:** Auch in Truhen und bei Händlern funktioniert bIsCurrency.
+> Eine Truhe mit DA_Goldmuenze (Count: 50) → Spieler bekommt 50 Gold direkt.
+
 ---
 
 # 9. Equipment-System
@@ -755,6 +812,17 @@ Im Details-Panel → **Merchant | Stock** → **RandomStock** → **+** klicken:
 | 2 | DA_Gift | 1 | 3 | 0.5 |
 
 Diese Items erscheinen **zufällig** — SpawnChance 0.3 = 30% Wahrscheinlichkeit.
+
+### Min/Max Random Stock
+
+Genau wie bei Containern kann man die Anzahl verschiedener zufälliger Items begrenzen:
+
+| Property | Wert | Beschreibung |
+|----------|------|-------------|
+| Min Random Stock | 2 | Mindestens 2 verschiedene Random-Items |
+| Max Random Stock | 5 | Maximal 5 verschiedene Random-Items |
+
+> Beide auf 0 = jeder Eintrag würfelt einzeln (Standard).
 
 ### Restock (Händler auffüllen)
 

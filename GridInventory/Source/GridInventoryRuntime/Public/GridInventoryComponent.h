@@ -345,9 +345,18 @@ public:
 	// ========================
 
 	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGoldChanged, float, NewGold, float, Delta);
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnCurrencyCollected, UInventoryItemDefinition*, ItemDef, int32, Count, float, GoldAdded);
 
 	UPROPERTY(BlueprintAssignable, Category = "Grid Inventory|Events")
 	FOnGoldChanged OnGoldChanged;
+
+	/**
+	 * Fired when a currency item is collected (bIsCurrency = true).
+	 * The item is NOT placed in the grid — BaseValue * Count is added as gold.
+	 * Use this to show pickup feedback (e.g. "+10 Gold" popup).
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Grid Inventory|Events")
+	FOnCurrencyCollected OnCurrencyCollected;
 
 	/** Get current gold amount */
 	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Gold")

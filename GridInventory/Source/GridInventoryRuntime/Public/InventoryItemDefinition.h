@@ -70,12 +70,23 @@ public:
 	float Weight;
 
 	// ========================
-	// Trade
+	// Trade / Currency
 	// ========================
 
 	/** Base gold value of this item (used for buying/selling with NPCs) */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Trade", meta = (ClampMin = "0"))
 	int32 BaseValue;
+
+	/**
+	 * If true, this item is currency (e.g. gold coins, gems).
+	 * Currency items are NOT placed in the grid — instead, their BaseValue * Count
+	 * is added directly to the inventory's gold. The item disappears after pickup.
+	 *
+	 * Example: DA_Goldmuenze with BaseValue 1, bIsCurrency true
+	 * -> picking up 10 = +10 gold, item never enters inventory grid.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Trade")
+	bool bIsCurrency;
 
 	// ========================
 	// Requirements
