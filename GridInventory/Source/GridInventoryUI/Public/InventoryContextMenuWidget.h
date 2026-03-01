@@ -33,6 +33,7 @@ public:
 	 * Build the menu content for the given item.
 	 * Must be called BEFORE AddToViewport.
 	 */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu")
 	void InitMenu(const FInventoryItemInstance& InItem, UGridInventoryComponent* InInventory);
 
 	UFUNCTION(BlueprintCallable, Category = "Context Menu")

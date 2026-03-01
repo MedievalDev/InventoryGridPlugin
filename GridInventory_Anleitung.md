@@ -15,10 +15,15 @@
 7. [Sammelbare Items in der Welt](#7-sammelbare-items)
 8. [Truhen & Container](#8-truhen-container)
 9. [Equipment-System](#9-equipment-system)
-10. [Debug-System & Konsolen-Commands](#10-debug-commands)
-11. [Blueprint Function Library](#11-blueprint-functions)
-12. [Performance-Tipps](#12-performance-tipps)
-13. [Häufige Probleme & Lösungen](#13-troubleshooting)
+10. [Gold & Währung](#10-gold-waehrung)
+11. [NPC-Handel / Trade Panel](#11-npc-handel)
+12. [Container Panel Widget](#12-container-panel)
+13. [Equipment Panel Widget](#13-equipment-panel)
+14. [Kontext-Menü](#14-kontext-menue)
+15. [Debug-System & Konsolen-Commands](#15-debug-commands)
+16. [Blueprint Function Library](#16-blueprint-functions)
+17. [Performance-Tipps](#17-performance-tipps)
+18. [Häufige Probleme & Lösungen](#18-troubleshooting)
 
 ---
 
@@ -467,11 +472,405 @@ Oder per Debug-Command: `Inv.Equip MainHand Eisenschwert`
 
 ---
 
-# 10. Debug-System
+# 10. Gold & Währung
+
+## 10.1 Übersicht
+
+Das Gold-System ist direkt im **GridInventoryComponent** integriert. Es gibt keine separate Gold-Komponente — du nutzt die gleiche Komponente die auch dein Inventar verwaltet.
+
+**Blueprint-Nodes auf dem GridInventoryComponent:**
+
+| Node | Typ | Beschreibung |
+|------|-----|-------------|
+| **Get Gold** | Pure | Aktuellen Goldstand abfragen |
+| **Set Gold** | Callable | Gold auf einen bestimmten Wert setzen |
+| **Add Gold** | Callable | Gold hinzufügen (positiv) oder abziehen (negativ) |
+| **Can Afford Gold** | Pure | Prüfen ob genug Gold da ist |
+| **Get Item Sell Price** | Pure | Verkaufspreis eines Items berechnen |
+| **Get Inventory Total Value** | Pure | Gesamtwert aller Items im Inventar |
+
+**Event:**
+
+| Event | Parameter | Beschreibung |
+|-------|-----------|-------------|
+| **On Gold Changed** | NewGold (float), Delta (float) | Feuert bei jeder Goldänderung |
+
+## 10.2 Gold mit deiner eigenen Variable syncen
+
+Du hast schon eine `Gold`-Variable in deinem Character Blueprint? Kein Problem — du brauchst sie nicht zu ersetzen. Binde einfach das `On Gold Changed` Event:
+
+```
+Event Begin Play
+  │
+  ├→ Get Grid Inventory Component (Self)
+  │
+  └→ Bind Event to On Gold Changed
+       │
+       └→ Custom Event "OnMyGoldChanged" (NewGold: float, Delta: float)
+            │
+            └→ SET Gold = NewGold    ← Deine eigene Variable wird synchronisiert
+```
+
+Oder noch einfacher: **Verwende GetGold() direkt** statt einer eigenen Variable. Überall wo du bisher `Gold` gelesen hast, ziehst du stattdessen das GridInventoryComponent raus und rufst `Get Gold` auf.
+
+## 10.3 BaseValue auf Items setzen
+
+Jedes Item hat jetzt ein **Base Value** Feld (Kategorie "Trade" im Editor):
+
+1. Öffne ein ItemDefinition DataAsset (z.B. `DA_Basilikum`)
+2. Im Details-Panel → Kategorie **Trade** → **Base Value** = z.B. `5` (Gold)
+3. Dieses BaseValue wird für Kauf/Verkauf bei NPC-Händlern verwendet
+
+| Item | Base Value | Bedeutung |
+|------|-----------|-----------|
+| DA_Basilikum | 5 | Kostet 5 Gold beim Händler |
+| DA_Eisenhut | 25 | Seltener, kostet mehr |
+| DA_Mondstein | 100 | Wertvoll |
+
+> **Tipp:** Stackbare Items: Preis = BaseValue × StackCount. Ein Stack von 10 Basilikum kostet also 50 Gold.
+
+## 10.4 Gold per Konsole testen
+
+```
+Inv.Gold.Set 1000        → Setzt Gold auf 1000
+Inv.Gold.Add 500          → Gibt 500 Gold dazu (= 1500)
+Inv.Gold.Add -200         → Zieht 200 Gold ab (= 1300)
+```
+
+## 10.5 Gold-Anzeige im HUD
+
+So zeigst du Gold im UI an:
+
+1. In deinem HUD Widget Blueprint: füge einen **TextBlock** hinzu (z.B. `GoldDisplay`)
+2. Im Event Graph:
+
+```
+Event Construct
+  │
+  ├→ Get Owning Player Pawn → Get Grid Inventory Component
+  │
+  └→ Bind Event to On Gold Changed
+       │
+       └→ Custom Event "UpdateGoldDisplay"
+            │
+            └→ GoldDisplay → Set Text
+                  Text: Format Text "Gold: {0}" (NewGold als int)
+```
+
+## 10.6 Gold wird automatisch gespeichert
+
+Gold wird zusammen mit dem Inventar gespeichert und geladen — kein extra Aufwand:
+- `Save Inventory (Slot 0)` → speichert Items UND Gold
+- `Load Inventory (Slot 0)` → stellt Items UND Gold wieder her
+
+---
+
+# 11. NPC-Handel / Trade Panel
+
+## 11.1 Übersicht
+
+Das Trade-System zeigt zwei Inventare nebeneinander: Spieler und Händler. Items können zwischen den Inventaren gekauft und verkauft werden. Gold wird dabei automatisch verrechnet.
+
+**Preisberechnung:**
+- **Kaufpreis** = BaseValue × StackCount × BuyPriceMultiplier (Standard: 1.0)
+- **Verkaufspreis** = BaseValue × StackCount × SellPriceMultiplier (Standard: 0.5)
+
+## 11.2 NPC-Händler einrichten
+
+Ein NPC-Händler ist einfach ein Actor mit einem eigenen **GridInventoryComponent**:
+
+1. Erstelle einen neuen Actor Blueprint: `BP_Haendler`
+2. Add Component → **GridInventoryComponent**
+3. Konfiguriere:
+   - Grid Width: 8
+   - Grid Height: 6
+4. Add Component → **Static Mesh** (z.B. Charakter-Mesh)
+5. Add Component → **Box Collision** (Interaktions-Reichweite)
+
+## 11.3 Händler-Inventar befüllen
+
+Im `BP_Haendler` Blueprint → Event Graph:
+
+```
+Event Begin Play
+  │
+  ├→ Get Grid Inventory Component
+  │
+  ├→ Set Gold (Amount: 5000)          ← Händler hat 5000 Gold
+  │
+  ├→ Try Add Item (ItemDef: DA_Heiltrank, Count: 10)
+  ├→ Try Add Item (ItemDef: DA_Manatrank, Count: 5)
+  └→ Try Add Item (ItemDef: DA_Eisenschwert, Count: 1)
+```
+
+## 11.4 WBP_TradePanel erstellen
+
+1. Content Browser → Rechtsklick → User Interface → **Widget Blueprint**
+2. Parent Class: **TradePanelWidget**
+3. Name: `WBP_TradePanel`
+4. Öffnen und folgende Struktur bauen:
+
+```
+[Root] Canvas Panel
+ └─ Border (Hintergrund, z.B. dunkelgrau, Padding 10)
+     └─ VerticalBox
+         ├─ HorizontalBox (Titel-Zeile)
+         │   ├─ TextBlock "Handel"
+         │   └─ CloseButton (Button mit "X" Text)     ← Name: "CloseButton"
+         │
+         ├─ HorizontalBox (Haupt-Bereich)
+         │   ├─ VerticalBox (Spieler-Seite, Padding Right 10)
+         │   │   ├─ TextBlock "Dein Inventar"
+         │   │   ├─ PlayerGrid (WBP_Inventory)         ← Name: "PlayerGrid"
+         │   │   └─ HorizontalBox
+         │   │       ├─ TextBlock "Gold: "
+         │   │       └─ PlayerGoldText (TextBlock)     ← Name: "PlayerGoldText"
+         │   │
+         │   └─ VerticalBox (Händler-Seite)
+         │       ├─ MerchantTitle (TextBlock)          ← Name: "MerchantTitle"
+         │       ├─ MerchantGrid (WBP_Inventory)       ← Name: "MerchantGrid"
+         │       └─ HorizontalBox
+         │           ├─ TextBlock "Gold: "
+         │           └─ MerchantGoldText (TextBlock)   ← Name: "MerchantGoldText"
+         │
+         └─ (optional: Info-Text unten)
+```
+
+**Wichtig:** Die Widget-Namen müssen EXAKT stimmen:
+- `PlayerGrid`, `MerchantGrid` — müssen vom Typ **WBP_Inventory** sein
+- `PlayerGoldText`, `MerchantGoldText`, `MerchantTitle` — TextBlocks
+- `CloseButton` — Button
+
+5. Im Details-Panel des WBP_TradePanel:
+
+| Property | Wert | Beschreibung |
+|----------|------|-------------|
+| Cell Size | 64 | Pixelgröße pro Zelle |
+| Slot Widget Class | WBP_InventorySlot | Dein Slot-Widget |
+| Buy Price Multiplier | 1.0 | Kaufpreis = Itemwert × 1.0 |
+| Sell Price Multiplier | 0.5 | Verkaufspreis = Itemwert × 0.5 |
+
+## 11.5 Handel öffnen (Blueprint)
+
+Im ThirdPersonCharacter (oder wo du Interaktion handhabst):
+
+```
+Keyboard F (Pressed)    ← oder dein Interaktions-Key
+  │
+  ├→ Line Trace / Sphere Trace
+  │    Start: Camera Location
+  │    End: Camera Location + Forward × 300
+  │
+  ├→ Hit Actor → Cast to BP_Haendler
+  │
+  └─ Cast Success:
+      │
+      ├→ Create Widget (Class: WBP_TradePanel)
+      │    → Promote to Variable: "TradePanel"
+      │
+      ├→ TradePanel → Open Trade
+      │    Player Inv: Get Grid Inventory Component (Self)
+      │    Merchant Inv: BP_Haendler → Get Grid Inventory Component
+      │    Merchant Name: "Kräuterhändler"
+      │
+      ├→ TradePanel → Add to Viewport
+      │
+      └→ Set Input Mode Game And UI (Hide Cursor: false)
+```
+
+## 11.6 Items kaufen und verkaufen
+
+Das TradePanelWidget hat zwei Blueprint-Nodes:
+
+| Node | Beschreibung |
+|------|-------------|
+| **Buy Item** (FGuid) | Kauft Item vom Händler. Zieht Gold vom Spieler ab, überträgt Item. |
+| **Sell Item** (FGuid) | Verkauft Item an Händler. Gibt Gold dem Spieler, überträgt Item. |
+
+Du kannst diese z.B. auf den Rechtsklick im Trade-Modus binden, oder über einen "Kaufen"/"Verkaufen" Button.
+
+**Beispiel — Kauf per Rechtsklick auf Händler-Item:**
+Im WBP_TradePanel Event Graph → Override `On Item Right Clicked` auf dem MerchantGrid:
+
+```
+Event On Item Right Clicked (MerchantGrid)
+  │
+  ├→ Item → Break → Unique ID
+  │
+  └→ Buy Item (Unique ID)
+       │
+       ├→ True: Print String "Gekauft!"
+       └→ False: Print String "Nicht genug Gold oder Platz!"
+```
+
+**Verkauf per Rechtsklick auf eigenes Item:**
+```
+Event On Item Right Clicked (PlayerGrid)
+  │
+  ├→ Item → Break → Unique ID
+  │
+  └→ Sell Item (Unique ID)
+```
+
+## 11.7 Events überschreiben
+
+Im WBP_TradePanel kannst du diese Events in Blueprint überschreiben:
+
+| Event | Wann? | Nutzen |
+|-------|-------|--------|
+| On Trade Opened | Nach OpenTrade | Sound abspielen, Animation |
+| On Trade Closed | Nach CloseTrade | Input zurücksetzen |
+| On Item Bought | Nach erfolgreichem Kauf | "Ka-Ching!" Sound, Partikel |
+| On Item Sold | Nach erfolgreichem Verkauf | Feedback |
+
+---
+
+# 12. Container Panel Widget
+
+Das Container Panel zeigt zwei Inventare nebeneinander: dein Inventar und den Inhalt einer Truhe/Container.
+
+## 12.1 WBP_ContainerPanel erstellen
+
+1. Content Browser → Rechtsklick → User Interface → **Widget Blueprint**
+2. Parent Class: **ContainerPanelWidget**
+3. Name: `WBP_ContainerPanel`
+4. Struktur:
+
+```
+[Root] Canvas Panel
+ └─ Border (Hintergrund)
+     └─ VerticalBox
+         ├─ HorizontalBox (Titel-Zeile)
+         │   ├─ ContainerTitle (TextBlock)          ← Name: "ContainerTitle"
+         │   └─ CloseButton (Button mit "X")        ← Name: "CloseButton"
+         │
+         └─ HorizontalBox (Haupt-Bereich)
+             ├─ VerticalBox
+             │   ├─ TextBlock "Dein Inventar"
+             │   └─ PlayerGrid (WBP_Inventory)      ← Name: "PlayerGrid"
+             │
+             └─ VerticalBox
+                 ├─ TextBlock "Container"
+                 └─ ContainerGrid (WBP_Inventory)   ← Name: "ContainerGrid"
+```
+
+5. Im Details-Panel:
+
+| Property | Wert |
+|----------|------|
+| Cell Size | 64 |
+| Slot Widget Class | WBP_InventorySlot |
+
+## 12.2 Container öffnen (Blueprint)
+
+Im ThirdPersonCharacter:
+
+```
+E gedrückt → Cast to InventoryContainer → Try Open (Self)
+  │
+  Branch (Return):
+  │
+  ├→ True:
+  │   ├→ Create Widget (WBP_ContainerPanel) → Variable "ContainerPanel"
+  │   ├→ ContainerPanel → Open Container
+  │   │    Container: Cast Result (InventoryContainer)
+  │   │    Player Inventory: Get Grid Inventory Component (Self)
+  │   ├→ Add to Viewport
+  │   └→ Set Input Mode Game And UI
+  │
+  └→ False: Print "Verschlossen!"
+```
+
+## 12.3 Drag & Drop zwischen Inventaren
+
+Drag & Drop funktioniert automatisch! Items zwischen Player-Grid und Container-Grid ziehen "just works" — das GridInventoryWidget unterstützt Cross-Inventory-Transfers.
+
+---
+
+# 13. Equipment Panel Widget
+
+Das Equipment Panel zeigt alle Equipment-Slots dynamisch an.
+
+## 13.1 WBP_EquipmentPanel erstellen
+
+1. Content Browser → Rechtsklick → User Interface → **Widget Blueprint**
+2. Parent Class: **EquipmentPanelWidget**
+3. Name: `WBP_EquipmentPanel`
+4. Struktur:
+
+```
+[Root] Canvas Panel
+ └─ Border (Hintergrund)
+     └─ VerticalBox
+         ├─ TextBlock "Ausrüstung"
+         └─ SlotContainer (VerticalBox oder WrapBox)  ← Name: "SlotContainer"
+```
+
+> **Wichtig:** Der `SlotContainer` wird automatisch mit Equipment-Slot-Widgets befüllt. Du musst die Slots NICHT manuell hinzufügen — das macht der C++ Code basierend auf deinen Slot Definitions.
+
+5. Im Details-Panel:
+
+| Property | Wert |
+|----------|------|
+| Equipment Slot Size | 80 (Pixelgröße pro Slot) |
+| Slot Widget Class | WBP_EquipmentSlot |
+
+## 13.2 Equipment Panel einrichten (Blueprint)
+
+Im ThirdPersonCharacter → Event Begin Play (nach dem Inventar-Widget):
+
+```
+Event Begin Play
+  │
+  ├→ Create Widget (WBP_EquipmentPanel) → Variable "EquipmentPanel"
+  │
+  ├→ EquipmentPanel → Set Equipment Component
+  │    Equipment Comp: Get Equipment Component (Self)
+  │
+  ├→ EquipmentPanel → Set Linked Inventory
+  │    Inventory: Get Grid Inventory Component (Self)
+  │
+  ├→ Add to Viewport
+  │
+  └→ EquipmentPanel → Refresh Slots
+```
+
+Die Slots werden automatisch aus deinen `Slot Definitions` (auf dem EquipmentComponent) erstellt.
+
+---
+
+# 14. Kontext-Menü
+
+## 14.1 Automatisches Rechtsklick-Menü
+
+Das GridInventoryWidget zeigt automatisch ein Kontext-Menü bei Rechtsklick auf ein Item. Du musst nichts extra einrichten — es funktioniert out-of-the-box.
+
+**Standard-Aktionen:**
+
+| Aktion | Bedingung | Was passiert |
+|--------|-----------|-------------|
+| **Benutzen** | Item ist `bIsConsumable` | `Consume Item` wird aufgerufen |
+| **Drehen** | Item hat `bCanRotate` | Item um 90° drehen |
+| **Wegwerfen** | Immer | Item wird in die Welt gedroppt |
+| **Info** | Immer | Item-Details auf dem Bildschirm |
+
+## 14.2 Eigenes Kontext-Menü gestalten
+
+Willst du das Menü visuell anpassen?
+
+1. Erstelle: `WBP_ContextMenu` (Parent: **InventoryContextMenuWidget**)
+2. Gestalte es nach Belieben — die Logik (Buttons, Aktionen) wird vom C++ Code aufgebaut
+3. Setze die Klasse in deinem GridInventoryWidget als Context Menu Class
+
+> **Tipp:** Das Kontext-Menü wird über `Init Menu` vor dem `Add to Viewport` befüllt. Die Buttons werden programmatisch erzeugt.
+
+---
+
+# 15. Debug-System
 
 Alle Commands in der Konsole (Tilde `~`). Nur in Non-Shipping Builds verfügbar.
 
-## 10.1 Wichtigste Commands
+## 15.1 Wichtigste Commands
 
 | Command | Beschreibung |
 |---------|-------------|
@@ -481,21 +880,41 @@ Alle Commands in der Konsole (Tilde `~`). Nur in Non-Shipping Builds verfügbar.
 | `Inv.Find <Text>` | Nach Name suchen |
 | `Inv.Info <ShortUID>` | Detail-Info zu einem Item |
 | `Inv.Clear` | Inventar leeren |
+| `Inv.Gold.Add <Amount>` | Gold hinzufügen (positiv) oder abziehen (negativ) |
+| `Inv.Gold.Set <Amount>` | Gold auf exakten Wert setzen |
 | `Inv.ImportJSON <Pfad>` | JSON-Datei importieren |
 
-## 10.2 Alle Commands
+## 15.2 Gold-Commands Beispiele
 
-Siehe beiliegende Excel-Datei `GridInventory_Commands.xlsx` für die komplette Liste.
+```
+Inv.Gold.Set 1000         → Gold = 1000
+Inv.Gold.Add 500          → Gold = 1500
+Inv.Gold.Add -200         → Gold = 1300
+Inv.Gold.Set 0            → Gold = 0
+```
+
+## 15.3 Alle Commands
+
+| Kategorie | Commands |
+|-----------|----------|
+| **Items** | Inv.Add, Inv.AddAt, Inv.Remove, Inv.Consume, Inv.Drop, Inv.Give |
+| **Equipment** | Inv.Equip, Inv.Unequip, Inv.ListSlots |
+| **Merge** | Inv.Merge, Inv.SetClass |
+| **Gold** | Inv.Gold.Add, Inv.Gold.Set |
+| **Einstellungen** | Inv.SetMaxWeight, Inv.SetGridSize, Inv.Clear, Inv.Sort |
+| **Info** | Inv.List, Inv.ListByType, Inv.Find, Inv.Info, Inv.ItemDB |
+| **Debug** | Inv.Debug, Inv.Debug.Bitmap, Inv.Debug.FreeRects, Inv.Debug.Performance, Inv.Debug.Memory, Inv.Debug.Slots |
+| **Container** | Inv.Container.List, Inv.Container.Open, Inv.Container.Loot |
 
 > **Tipp:** Die ShortUID ist der 8-stellige Hex-Code am Anfang jeder Zeile bei `Inv.List`. Du brauchst nicht die ganze UUID, nur die ersten 4-8 Zeichen.
 
 ---
 
-# 11. Blueprint Function Library
+# 16. Blueprint Function Library
 
 20+ Blueprint-Nodes für Suche, Filter und Stats:
 
-## 11.1 Suche & Filter
+## 16.1 Suche & Filter
 
 | Node | Input | Output | Beschreibung |
 |------|-------|--------|-------------|
@@ -509,7 +928,7 @@ Siehe beiliegende Excel-Datei `GridInventory_Commands.xlsx` für die komplette L
 | DeepSearchByName | Inventory, Text | Array | Suche inkl. Sub-Inventare |
 | DeepSearchByType | Inventory, Type | Array | Typ-Suche inkl. Sub-Inventare |
 
-## 11.2 Stats & Utilities
+## 16.2 Stats & Utilities
 
 | Node | Input | Output | Beschreibung |
 |------|-------|--------|-------------|
@@ -522,19 +941,19 @@ Siehe beiliegende Excel-Datei `GridInventory_Commands.xlsx` für die komplette L
 
 ---
 
-# 12. Performance-Tipps
+# 17. Performance-Tipps
 
-## 12.1 Soft References
+## 17.1 Soft References
 
 Alle Icons und Actor-Klassen sind Soft References. Das bedeutet: nur das was gerade sichtbar ist, wird geladen. Bei 160+ Zutaten spart das Gigabytes an RAM.
 
 Du kannst den Status prüfen: `Inv.Debug.Memory`
 
-## 12.2 Virtualisiertes Grid
+## 17.2 Virtualisiertes Grid
 
 Das UI erstellt nur Widgets für sichtbare Zellen. Bei einem 60×80 Grid sind das ~300 Widgets statt 4.800. Status prüfen: `Inv.Debug.Slots`
 
-## 12.3 Grid-Größe wählen
+## 17.3 Grid-Größe wählen
 
 | Verwendung | Grid-Größe | Zellen | Empfehlung |
 |-----------|-----------|--------|-----------|
@@ -543,17 +962,17 @@ Das UI erstellt nur Widgets für sichtbare Zellen. Bei einem 60×80 Grid sind da
 | Großes RPG | 40×30 | 1.200 | Für viele Items |
 | Maximum (wie Alchimist) | 60×80 | 4.800 | Braucht Virtualisierung |
 
-## 12.4 Batch-Operationen
+## 17.4 Batch-Operationen
 
 Wenn du viele Items auf einmal hinzufügst (z.B. Loot), nutze `TryAddItemsBatch` statt einzelne `TryAddItem`-Calls. Das verhindert 10× UI-Refresh bei 10 Items.
 
-## 12.5 Async Loot
+## 17.5 Async Loot
 
 Container generieren Loot automatisch async — kein Frame-Drop beim Öffnen einer Truhe.
 
 ---
 
-# 13. Häufige Probleme & Lösungen
+# 18. Häufige Probleme & Lösungen
 
 ## Build schlägt fehl
 
@@ -636,6 +1055,9 @@ MeinProjekt/
       WBP_Inventory.uasset
       WBP_InventorySlot.uasset
       WBP_EquipmentSlot.uasset
+      WBP_EquipmentPanel.uasset
+      WBP_ContainerPanel.uasset
+      WBP_TradePanel.uasset
     DataAssets/
       DA_LootTable_Kraeuter.uasset
   Plugins/
