@@ -11,12 +11,9 @@ public class GridInventoryRuntime : ModuleRules
 			"Core",
 			"CoreUObject",
 			"Engine",
-			"NetCore"
-		});
-
-		PrivateDependencyModuleNames.AddRange(new string[]
-		{
-			"AssetRegistry"
+			"NetCore",
+			"Json",
+			"JsonUtilities"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]

@@ -116,8 +116,10 @@ struct GRIDINVENTORYRUNTIME_API FInventoryGrid
 
 	/** Place an item on the grid */
 	bool PlaceItem(const FGuid& ItemID, FIntPoint Position, FIntPoint ItemSize);
-	/** Remove an item from the grid */
+	/** Remove an item from the grid (scans all cells — use RemoveItemAt for O(1)) */
 	bool RemoveItem(const FGuid& ItemID);
+	/** Remove using known position+size — O(item_area) instead of O(total_cells) */
+	bool RemoveItemAt(const FGuid& ItemID, FIntPoint Position, FIntPoint ItemSize);
 
 	/** Get the item ID at a specific cell */
 	FGuid GetItemAt(FIntPoint Position) const;

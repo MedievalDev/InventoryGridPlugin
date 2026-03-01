@@ -6,6 +6,7 @@
 #include "Components/ActorComponent.h"
 #include "EquipmentSlotDefinition.h"
 #include "InventoryItemInstance.h"
+#include "ItemRequirement.h"
 #include "EquipmentComponent.generated.h"
 
 class UGridInventoryComponent;
@@ -61,6 +62,41 @@ public:
 
 	UPROPERTY(BlueprintAssignable, Category = "Equipment|Events")
 	FOnEquipmentChanged OnEquipmentChanged;
+
+	// ========================
+	// Requirements
+	// ========================
+
+	/**
+	 * Player stat values for requirement checks.
+	 * Set these from Blueprint via SetPlayerStat (e.g. "Level" = 8, "Staerke" = 12).
+	 * If empty, all requirement checks pass (no restrictions).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Equipment|Requirements")
+	TMap<FName, float> PlayerStats;
+
+	/** Set a player stat value (e.g. call when player levels up) */
+	UFUNCTION(BlueprintCallable, Category = "Equipment|Requirements")
+	void SetPlayerStat(FName StatID, float Value);
+
+	/** Get a player stat value (returns 0 if not set) */
+	UFUNCTION(BlueprintPure, Category = "Equipment|Requirements")
+	float GetPlayerStat(FName StatID) const;
+
+	/**
+	 * Check if the player meets all requirements for an item.
+	 * Queries PlayerStats map for each requirement on the item.
+	 * Returns true if all requirements are met, or if PlayerStats is empty.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Equipment|Requirements")
+	bool MeetsRequirements(UInventoryItemDefinition* ItemDef) const;
+
+	/**
+	 * Get which requirements the player does NOT meet for an item.
+	 * Useful for showing "you need 3 more Strength" in the UI.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Equipment|Requirements")
+	TArray<FItemRequirement> GetUnmetRequirements(UInventoryItemDefinition* ItemDef) const;
 
 	// ========================
 	// Core Functions
@@ -147,6 +183,20 @@ public:
 	/** Get total weight of all equipped items */
 	UFUNCTION(BlueprintPure, Category = "Equipment|Query")
 	float GetTotalEquipmentWeight() const;
+
+	// ========================
+	// Save/Load Support
+	// ========================
+
+	/**
+	 * Restore an item directly into a slot (used by save/load system).
+	 * Bypasses inventory interaction and type checks — the save data is assumed valid.
+	 * Clears any existing item in the slot first.
+	 */
+	void RestoreEquipmentSlot(FName SlotID, const FInventoryItemInstance& Item);
+
+	/** Clear all equipment slots (used before loading saved state) */
+	void ClearAllSlots();
 
 protected:
 	virtual void BeginPlay() override;

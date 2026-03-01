@@ -26,6 +26,7 @@ void UItemContainerInventory::Initialize(UInventoryItemDefinition* ContainerItem
 
 	Grid.Initialize(GridWidth, GridHeight);
 	Items.Empty();
+	ItemIndexMap.Empty();
 	CachedWeight = 0.0f;
 	bInitialized = true;
 }
@@ -137,7 +138,8 @@ bool UItemContainerInventory::MoveItem(FGuid UniqueID, FIntPoint NewPosition, bo
 	const FIntPoint EffSize = Item.ItemDef->GetEffectiveSize(bRotated);
 	if (!Grid.CanPlaceAtIgnoring(NewPosition, EffSize, UniqueID)) return false;
 
-	Grid.RemoveItem(UniqueID);
+	// O(item_area) remove instead of O(total_cells)
+	Grid.RemoveItemAt(UniqueID, Item.GridPosition, Item.GetEffectiveSize());
 	Grid.PlaceItem(UniqueID, NewPosition, EffSize);
 	Item.GridPosition = NewPosition;
 	Item.bIsRotated = bRotated;
@@ -165,7 +167,8 @@ bool UItemContainerInventory::RotateItem(FGuid UniqueID)
 
 	if (Grid.CanPlaceAtIgnoring(Item.GridPosition, NewSize, UniqueID))
 	{
-		Grid.RemoveItem(UniqueID);
+		// O(item_area) remove instead of O(total_cells)
+		Grid.RemoveItemAt(UniqueID, Item.GridPosition, Item.GetEffectiveSize());
 		Grid.PlaceItem(UniqueID, Item.GridPosition, NewSize);
 		Item.bIsRotated = bNewRot;
 		OnContainerChanged.Broadcast();
@@ -254,6 +257,7 @@ void UItemContainerInventory::SortContainer()
 
 	Grid.Clear();
 	Items.Empty();
+	ItemIndexMap.Empty();
 
 	for (FInventoryItemInstance& Item : Copy)
 	{
@@ -263,6 +267,7 @@ void UItemContainerInventory::SortContainer()
 			Item.GridPosition = Slot.Position;
 			Item.bIsRotated = Slot.bRotated;
 			Grid.PlaceItem(Item.UniqueID, Slot.Position, Item.ItemDef->GetEffectiveSize(Slot.bRotated));
+			ItemIndexMap.Add(Item.UniqueID, Items.Num());
 			Items.Add(Item);
 		}
 	}
@@ -272,6 +277,7 @@ void UItemContainerInventory::SortContainer()
 void UItemContainerInventory::ClearContainer()
 {
 	Items.Empty();
+	ItemIndexMap.Empty();
 	Grid.Clear();
 	CachedWeight = 0.0f;
 	OnContainerChanged.Broadcast();
@@ -297,11 +303,32 @@ bool UItemContainerInventory::CanAffordWeight(float Additional) const
 
 int32 UItemContainerInventory::FindItemIndex(const FGuid& UniqueID) const
 {
+	const int32* Found = ItemIndexMap.Find(UniqueID);
+	return Found ? *Found : INDEX_NONE;
+}
+
+void UItemContainerInventory::SwapRemoveItemAtIndex(int32 Index)
+{
+	if (Index < 0 || Index >= Items.Num()) return;
+
+	ItemIndexMap.Remove(Items[Index].UniqueID);
+
+	const int32 LastIndex = Items.Num() - 1;
+	if (Index < LastIndex)
+	{
+		Items[Index] = Items[LastIndex];
+		ItemIndexMap.Add(Items[Index].UniqueID, Index);
+	}
+	Items.RemoveAt(LastIndex);
+}
+
+void UItemContainerInventory::RebuildItemIndexMap()
+{
+	ItemIndexMap.Empty(Items.Num());
 	for (int32 i = 0; i < Items.Num(); ++i)
 	{
-		if (Items[i].UniqueID == UniqueID) return i;
+		ItemIndexMap.Add(Items[i].UniqueID, i);
 	}
-	return INDEX_NONE;
 }
 
 int32 UItemContainerInventory::TryStackOntoExisting(UInventoryItemDefinition* ItemDef, int32 Count)
@@ -332,6 +359,8 @@ bool UItemContainerInventory::Internal_AddItemAt(UInventoryItemDefinition* ItemD
 	if (!Grid.PlaceItem(NewItem.UniqueID, Position, ItemDef->GetEffectiveSize(bRotated)))
 		return false;
 
+	// Update map BEFORE adding (index = current array size)
+	ItemIndexMap.Add(NewItem.UniqueID, Items.Num());
 	Items.Add(NewItem);
 	return true;
 }
@@ -345,8 +374,9 @@ bool UItemContainerInventory::Internal_RemoveItem(const FGuid& UniqueID, int32 C
 
 	if (Count <= 0 || Count >= Item.StackCount)
 	{
-		Grid.RemoveItem(UniqueID);
-		Items.RemoveAt(Index);
+		// O(item_area) grid remove + O(1) array swap
+		Grid.RemoveItemAt(UniqueID, Item.GridPosition, Item.GetEffectiveSize());
+		SwapRemoveItemAtIndex(Index);
 	}
 	else
 	{

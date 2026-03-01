@@ -10,6 +10,8 @@
 #include "GridInventoryComponent.generated.h"
 
 class UItemContainerInventory;
+class URuntimeItemDefinition;
+struct FItemSaveEntry;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInventoryItemAdded, const FInventoryItemInstance&, Item);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInventoryItemRemoved, const FInventoryItemInstance&, Item);
@@ -41,6 +43,10 @@ public:
 	/** Maximum weight capacity. 0 = unlimited. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid Inventory|Config", meta = (ClampMin = "0.0"))
 	float MaxWeight;
+
+	/** Cell size in pixels for the grid UI. The widget reads this value on init. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid Inventory|Config", meta = (ClampMin = "16.0", ClampMax = "256.0"))
+	float CellSize;
 
 	// ========================
 	// Events
@@ -95,6 +101,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Grid Inventory")
 	bool RotateItem(FGuid UniqueID);
 
+	/**
+	 * Split Count items from a stack and place them at NewPosition.
+	 * Source item keeps remaining stack. New item gets a new UniqueID.
+	 * @return true if split succeeded
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory")
+	bool SplitStack(FGuid SourceID, int32 Count, FIntPoint NewPosition, bool bRotated);
+
 	/** Transfer to another inventory (auto-find slot) */
 	UFUNCTION(BlueprintCallable, Category = "Grid Inventory")
 	bool TransferItem(FGuid UniqueID, UGridInventoryComponent* TargetInventory, int32 Count = 0);
@@ -102,6 +116,17 @@ public:
 	/** Transfer to specific position in another inventory */
 	UFUNCTION(BlueprintCallable, Category = "Grid Inventory")
 	bool TransferItemTo(FGuid UniqueID, UGridInventoryComponent* TargetInventory, FIntPoint TargetPosition, bool bRotated, int32 Count = 0);
+
+	/**
+	 * Set an instance-specific effect override on an item.
+	 * Overrides the base effect value from the ItemDef for this specific item instance.
+	 * @param UniqueID The item to modify
+	 * @param EffectID The effect name (e.g. "Damage", "Armor")
+	 * @param Value The override value
+	 * @return true if the item was found and modified
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Effects")
+	bool SetItemInstanceEffect(FGuid UniqueID, FName EffectID, float Value);
 
 	// ========================
 	// Consume / Use
@@ -133,6 +158,14 @@ public:
 	AActor* DropItem(FGuid UniqueID, FVector SpawnLocation, FRotator SpawnRotation, int32 Count = 0);
 
 	/**
+	 * Drop item with async world actor class loading.
+	 * Removes item immediately but spawns the world actor in a callback
+	 * once the class is loaded. No game-thread hitch.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|World")
+	void DropItemAsync(FGuid UniqueID, FVector SpawnLocation, FRotator SpawnRotation, int32 Count = 0);
+
+	/**
 	 * Pick up an item from the world into the inventory.
 	 * @param ItemDef The item definition to add
 	 * @param Count How many
@@ -160,6 +193,25 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Merge")
 	bool CanMergeItems(FGuid TargetID, FGuid SacrificeID) const;
+
+	/**
+	 * Stack source items onto target (same inventory).
+	 * Both must be the same stackable ItemDef. Respects MaxStackSize.
+	 * If source is fully consumed, it is removed from inventory.
+	 * @param Count How many to move (0 = as many as will fit)
+	 * @return Number of items actually moved (0 on failure)
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Merge")
+	int32 StackOnto(FGuid SourceID, FGuid TargetID, int32 Count = 0);
+
+	/**
+	 * Stack items from an external inventory onto a target in this inventory.
+	 * Removes from source inventory, adds to target stack.
+	 * @param Count How many to move (0 = as many as will fit)
+	 * @return Number of items actually moved (0 on failure)
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Merge")
+	int32 StackOntoFrom(FGuid TargetID, UGridInventoryComponent* SourceInventory, FGuid SourceID, int32 Count = 0);
 
 	// ========================
 	// Consume / Drop / Merge Events
@@ -218,6 +270,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Query")
 	bool CanPlaceAt(UInventoryItemDefinition* ItemDef, FIntPoint Position, bool bRotated) const;
 
+	/** Check if item can be placed, ignoring a specific item (for same-inventory moves) */
+	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Query")
+	bool CanPlaceAtIgnoring(UInventoryItemDefinition* ItemDef, FIntPoint Position, bool bRotated, FGuid IgnoreID) const;
+
 	/** Get number of free cells */
 	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Query")
 	int32 GetFreeCellCount() const;
@@ -261,6 +317,126 @@ public:
 	const FInventoryGrid& GetGrid() const { return Grid; }
 
 	// ========================
+	// Runtime Item Creation
+	// ========================
+
+	/**
+	 * Create a runtime item definition (e.g. a brewed potion).
+	 * The definition is stored in this component's RuntimeDefinitions array
+	 * to prevent garbage collection. Use the returned pointer like any ItemDef.
+	 *
+	 * @param ItemID Unique ID string (e.g. "BrauterTrank_001")
+	 * @param DisplayName Display name
+	 * @param Effects Base effect values
+	 * @param SourceIngredients Names of ingredients used
+	 * @return The new definition, or nullptr on failure
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Runtime")
+	URuntimeItemDefinition* CreateRuntimeItem(
+		FName ItemID,
+		FText DisplayName,
+		const TArray<FItemEffectValue>& Effects,
+		const TArray<FName>& SourceIngredients);
+
+	/** Get all runtime definitions held by this component (GC roots) */
+	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Runtime")
+	const TArray<URuntimeItemDefinition*>& GetRuntimeDefinitions() const { return RuntimeDefinitions; }
+
+	// ========================
+	// Save / Load
+	// ========================
+
+	/**
+	 * Save the complete inventory state to a slot (synchronous).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Save")
+	bool SaveInventory(int32 SlotIndex);
+
+	/**
+	 * Load the complete inventory state from a slot (synchronous).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Save")
+	bool LoadInventory(int32 SlotIndex);
+
+	/**
+	 * Save asynchronously — disk I/O on background thread.
+	 * Fires OnSaveComplete when done.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Save")
+	void SaveInventoryAsync(int32 SlotIndex);
+
+	/**
+	 * Load asynchronously — disk I/O on background thread.
+	 * Fires OnLoadComplete when done.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Save")
+	void LoadInventoryAsync(int32 SlotIndex);
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSaveLoadComplete, int32, SlotIndex, bool, bSuccess);
+
+	UPROPERTY(BlueprintAssignable, Category = "Grid Inventory|Events")
+	FOnSaveLoadComplete OnSaveComplete;
+
+	UPROPERTY(BlueprintAssignable, Category = "Grid Inventory|Events")
+	FOnSaveLoadComplete OnLoadComplete;
+
+	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Save")
+	static bool DoesSaveExist(int32 SlotIndex);
+
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Save")
+	static bool DeleteSave(int32 SlotIndex);
+
+	// ========================
+	// Gold / Currency
+	// ========================
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGoldChanged, float, NewGold, float, Delta);
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnCurrencyCollected, UInventoryItemDefinition*, ItemDef, int32, Count, float, GoldAdded);
+
+	UPROPERTY(BlueprintAssignable, Category = "Grid Inventory|Events")
+	FOnGoldChanged OnGoldChanged;
+
+	/**
+	 * Fired when a currency item is collected (bIsCurrency = true).
+	 * The item is NOT placed in the grid — BaseValue * Count is added as gold.
+	 * Use this to show pickup feedback (e.g. "+10 Gold" popup).
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Grid Inventory|Events")
+	FOnCurrencyCollected OnCurrencyCollected;
+
+	/** Get current gold amount */
+	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Gold")
+	float GetGold() const;
+
+	/** Set gold to an absolute value (clamped >= 0) */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Gold")
+	void SetGold(float Amount);
+
+	/** Add (or subtract if negative) gold */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Gold")
+	void AddGold(float Amount);
+
+	/** Check if we can afford a given cost */
+	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Gold")
+	bool CanAffordGold(float Cost) const;
+
+	/** Calculate the sell price for an item (BaseValue * StackCount * PriceMultiplier) */
+	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Gold")
+	float GetItemSellPrice(FGuid UniqueID, float PriceMultiplier = 1.0f) const;
+
+	/** Get total value of all items in inventory */
+	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Gold")
+	float GetInventoryTotalValue() const;
+
+	/**
+	 * Bind an external float variable for gold storage.
+	 * The component will read/write to this pointer directly.
+	 * Pass nullptr to unbind and use internal gold.
+	 * C++ only — not exposed to Blueprint.
+	 */
+	void BindExternalGold(float* GoldPtr);
+
+	// ========================
 	// Utility
 	// ========================
 
@@ -273,6 +449,13 @@ public:
 	/** Reinitialize the grid (after changing GridWidth/GridHeight at runtime). */
 	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Utility")
 	void InitializeGrid();
+
+	/**
+	 * Resize the grid at runtime. Only succeeds if all current items
+	 * fit within the new dimensions; otherwise returns false (no change).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Utility")
+	bool ResizeGrid(int32 NewWidth, int32 NewHeight);
 
 protected:
 	virtual void BeginPlay() override;
@@ -304,7 +487,20 @@ private:
 	UPROPERTY(ReplicatedUsing = OnRep_Items)
 	TArray<FInventoryItemInstance> Items;
 
+	/** O(1) lookup: UniqueID → index in Items array */
+	TMap<FGuid, int32> ItemIndexMap;
+
+	/** GC-safe storage for runtime-created item definitions */
+	UPROPERTY()
+	TArray<URuntimeItemDefinition*> RuntimeDefinitions;
+
 	float CachedWeight;
+
+	/** Internal gold storage (used when no external binding) */
+	float InternalGold;
+
+	/** Pointer to external gold variable (nullptr = use InternalGold) */
+	float* ExternalGoldPtr;
 
 	/** Dirty flag for batched UI updates - prevents multiple refreshes per frame */
 	bool bInventoryDirty;
@@ -318,7 +514,19 @@ private:
 
 	void RecalculateWeight();
 	bool CanAffordWeight(float AdditionalWeight) const;
+
+	/** O(1) item lookup via ItemIndexMap */
 	int32 FindItemIndex(const FGuid& UniqueID) const;
+
+	/**
+	 * Swap-remove an item at the given array index.
+	 * O(1) — swaps last element into removed position and updates ItemIndexMap.
+	 */
+	void SwapRemoveItemAtIndex(int32 Index);
+
+	/** Rebuild ItemIndexMap from Items array */
+	void RebuildItemIndexMap();
+
 	int32 TryStackOntoExisting(UInventoryItemDefinition* ItemDef, int32 Count);
 	void RebuildGridFromItems();
 
@@ -329,4 +537,15 @@ private:
 
 	bool Internal_AddItemAt(UInventoryItemDefinition* ItemDef, FIntPoint Position, bool bRotated, int32 Count);
 	bool Internal_RemoveItem(const FGuid& UniqueID, int32 Count);
+
+	// Save/Load helpers
+	static FString GetSaveSlotName(int32 SlotIndex);
+	static FItemSaveEntry CreateSaveEntry(const FInventoryItemInstance& Item);
+	bool RestoreItemFromEntry(const FItemSaveEntry& Entry);
+
+	/** Build save game object on game thread (used by both sync and async) */
+	class UInventorySaveGame* BuildSaveGameObject(int32 SlotIndex);
+
+	/** Process a loaded save game (used by both sync and async) */
+	bool ProcessLoadedSaveGame(class UInventorySaveGame* SaveGame, int32 SlotIndex);
 };
