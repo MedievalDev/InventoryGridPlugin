@@ -341,6 +341,47 @@ public:
 	static bool DeleteSave(int32 SlotIndex);
 
 	// ========================
+	// Gold / Currency
+	// ========================
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGoldChanged, float, NewGold, float, Delta);
+
+	UPROPERTY(BlueprintAssignable, Category = "Grid Inventory|Events")
+	FOnGoldChanged OnGoldChanged;
+
+	/** Get current gold amount */
+	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Gold")
+	float GetGold() const;
+
+	/** Set gold to an absolute value (clamped >= 0) */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Gold")
+	void SetGold(float Amount);
+
+	/** Add (or subtract if negative) gold */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Gold")
+	void AddGold(float Amount);
+
+	/** Check if we can afford a given cost */
+	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Gold")
+	bool CanAffordGold(float Cost) const;
+
+	/** Calculate the sell price for an item (BaseValue * StackCount * PriceMultiplier) */
+	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Gold")
+	float GetItemSellPrice(FGuid UniqueID, float PriceMultiplier = 1.0f) const;
+
+	/** Get total value of all items in inventory */
+	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Gold")
+	float GetInventoryTotalValue() const;
+
+	/**
+	 * Bind an external float variable for gold storage.
+	 * The component will read/write to this pointer directly.
+	 * Pass nullptr to unbind and use internal gold.
+	 * C++ only — not exposed to Blueprint.
+	 */
+	void BindExternalGold(float* GoldPtr);
+
+	// ========================
 	// Utility
 	// ========================
 
@@ -392,6 +433,12 @@ private:
 	TArray<URuntimeItemDefinition*> RuntimeDefinitions;
 
 	float CachedWeight;
+
+	/** Internal gold storage (used when no external binding) */
+	float InternalGold;
+
+	/** Pointer to external gold variable (nullptr = use InternalGold) */
+	float* ExternalGoldPtr;
 
 	/** Dirty flag for batched UI updates - prevents multiple refreshes per frame */
 	bool bInventoryDirty;

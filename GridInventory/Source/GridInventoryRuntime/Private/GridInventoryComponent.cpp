@@ -16,6 +16,8 @@ UGridInventoryComponent::UGridInventoryComponent()
 	, GridHeight(10)
 	, MaxWeight(0.0f)
 	, CachedWeight(0.0f)
+	, InternalGold(0.0f)
+	, ExternalGoldPtr(nullptr)
 	, bInventoryDirty(false)
 	, bBroadcastPending(false)
 {
@@ -906,6 +908,7 @@ UInventorySaveGame* UGridInventoryComponent::BuildSaveGameObject(int32 SlotIndex
 	UInventorySaveGame* SaveGame = NewObject<UInventorySaveGame>();
 	SaveGame->GridWidth = GridWidth;
 	SaveGame->GridHeight = GridHeight;
+	SaveGame->SavedGold = GetGold();
 
 	SaveGame->InventoryItems.Reserve(Items.Num());
 	for (const FInventoryItemInstance& Item : Items)
@@ -965,6 +968,7 @@ bool UGridInventoryComponent::ProcessLoadedSaveGame(UInventorySaveGame* SaveGame
 	if (!SaveGame) return false;
 
 	ClearInventory();
+	SetGold(SaveGame->SavedGold);
 
 	int32 RestoredCount = 0;
 	for (const FItemSaveEntry& Entry : SaveGame->InventoryItems)
@@ -1288,4 +1292,78 @@ void UGridInventoryComponent::TickComponent(float DeltaTime, ELevelTick TickType
 	}
 
 	SetComponentTickEnabled(false);
+}
+
+// ============================================================================
+// Gold / Currency
+// ============================================================================
+
+float UGridInventoryComponent::GetGold() const
+{
+	return ExternalGoldPtr ? *ExternalGoldPtr : InternalGold;
+}
+
+void UGridInventoryComponent::SetGold(float Amount)
+{
+	const float OldGold = GetGold();
+	const float NewGold = FMath::Max(0.0f, Amount);
+
+	if (ExternalGoldPtr)
+	{
+		*ExternalGoldPtr = NewGold;
+	}
+	else
+	{
+		InternalGold = NewGold;
+	}
+
+	const float Delta = NewGold - OldGold;
+	if (!FMath::IsNearlyZero(Delta))
+	{
+		OnGoldChanged.Broadcast(NewGold, Delta);
+	}
+}
+
+void UGridInventoryComponent::AddGold(float Amount)
+{
+	SetGold(GetGold() + Amount);
+}
+
+bool UGridInventoryComponent::CanAffordGold(float Cost) const
+{
+	return GetGold() >= Cost;
+}
+
+float UGridInventoryComponent::GetItemSellPrice(FGuid UniqueID, float PriceMultiplier) const
+{
+	const int32 Index = FindItemIndex(UniqueID);
+	if (Index == INDEX_NONE) return 0.0f;
+
+	const FInventoryItemInstance& Item = Items[Index];
+	if (!Item.ItemDef) return 0.0f;
+
+	return static_cast<float>(Item.ItemDef->BaseValue) * Item.StackCount * PriceMultiplier;
+}
+
+float UGridInventoryComponent::GetInventoryTotalValue() const
+{
+	float Total = 0.0f;
+	for (const FInventoryItemInstance& Item : Items)
+	{
+		if (Item.ItemDef)
+		{
+			Total += static_cast<float>(Item.ItemDef->BaseValue) * Item.StackCount;
+		}
+	}
+	return Total;
+}
+
+void UGridInventoryComponent::BindExternalGold(float* GoldPtr)
+{
+	if (GoldPtr)
+	{
+		// Sync: take the external value as current gold
+		InternalGold = *GoldPtr;
+	}
+	ExternalGoldPtr = GoldPtr;
 }

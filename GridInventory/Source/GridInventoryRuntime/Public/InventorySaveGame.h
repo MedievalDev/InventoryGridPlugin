@@ -125,6 +125,10 @@ public:
 	UPROPERTY()
 	int32 GridHeight;
 
+	/** Saved gold amount */
+	UPROPERTY()
+	float SavedGold;
+
 	/** All items in the player inventory */
 	UPROPERTY()
 	TArray<FItemSaveEntry> InventoryItems;

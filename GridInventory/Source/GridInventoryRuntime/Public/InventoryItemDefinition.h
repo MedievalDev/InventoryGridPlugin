@@ -69,6 +69,14 @@ public:
 	float Weight;
 
 	// ========================
+	// Trade
+	// ========================
+
+	/** Base gold value of this item (used for buying/selling with NPCs) */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Trade", meta = (ClampMin = "0"))
+	int32 BaseValue;
+
+	// ========================
 	// Effect Values
 	// ========================
 

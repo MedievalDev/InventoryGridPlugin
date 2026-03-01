@@ -168,6 +168,15 @@ void UInventoryDebugSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		TEXT("Inv.Container.Loot <Index> [Level] - Generate/regen loot"),
 		&UInventoryDebugSubsystem::Cmd_ContainerLoot);
 
+	// --- Gold ---
+	RegisterCommand(TEXT("Inv.Gold.Add"),
+		TEXT("Inv.Gold.Add <Amount> - Add/subtract gold (negative allowed)"),
+		&UInventoryDebugSubsystem::Cmd_GoldAdd);
+
+	RegisterCommand(TEXT("Inv.Gold.Set"),
+		TEXT("Inv.Gold.Set <Amount> - Set gold to exact value"),
+		&UInventoryDebugSubsystem::Cmd_GoldSet);
+
 #endif // !UE_BUILD_SHIPPING
 }
 
@@ -1332,6 +1341,47 @@ void UInventoryDebugSubsystem::Cmd_ContainerLoot(const TArray<FString>& Args, UW
 	}
 
 	DebugPrintError(FString::Printf(TEXT("Container index %d not found"), TargetIndex));
+}
+
+// ============================================================================
+// Gold Commands
+// ============================================================================
+
+void UInventoryDebugSubsystem::Cmd_GoldAdd(const TArray<FString>& Args, UWorld* World)
+{
+	if (Args.Num() < 1)
+	{
+		DebugPrint(TEXT("Usage: Inv.Gold.Add <Amount>  (negative to subtract)"));
+		return;
+	}
+
+	UGridInventoryComponent* Inv = GetPlayerInventory(World);
+	if (!Inv) { DebugPrintError(TEXT("No inventory on player pawn")); return; }
+
+	const float Amount = FCString::Atof(*Args[0]);
+	const float Before = Inv->GetGold();
+	Inv->AddGold(Amount);
+	const float After = Inv->GetGold();
+
+	DebugPrint(FString::Printf(TEXT("Gold: %.0f → %.0f (%+.0f)"), Before, After, After - Before),
+		Amount >= 0.0f ? FColor::Yellow : FColor::Orange);
+}
+
+void UInventoryDebugSubsystem::Cmd_GoldSet(const TArray<FString>& Args, UWorld* World)
+{
+	if (Args.Num() < 1)
+	{
+		DebugPrint(TEXT("Usage: Inv.Gold.Set <Amount>"));
+		return;
+	}
+
+	UGridInventoryComponent* Inv = GetPlayerInventory(World);
+	if (!Inv) { DebugPrintError(TEXT("No inventory on player pawn")); return; }
+
+	const float Amount = FCString::Atof(*Args[0]);
+	Inv->SetGold(Amount);
+
+	DebugPrint(FString::Printf(TEXT("Gold set to: %.0f"), Inv->GetGold()), FColor::Yellow);
 }
 
 #endif // !UE_BUILD_SHIPPING

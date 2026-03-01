@@ -5,5 +5,6 @@
 UInventorySaveGame::UInventorySaveGame()
 	: GridWidth(10)
 	, GridHeight(10)
+	, SavedGold(0.0f)
 {
 }
