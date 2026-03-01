@@ -107,6 +107,9 @@ public:
 	/** Restore drag-hidden visual (for drag cancellation) */
 	void RestoreDragHiddenVisual();
 
+	/** Remove the manually-positioned drag visual from GridCanvas */
+	void RemoveDragVisual();
+
 protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
@@ -170,6 +173,10 @@ private:
 
 	/** Item ID whose visual is hidden during an active whole-stack drag */
 	FGuid DragHiddenItemID;
+
+	/** Manually-positioned drag visual on GridCanvas (bypasses DefaultDragVisual animation bug) */
+	UPROPERTY()
+	UWidget* ActiveDragVisual;
 
 	// Stack-split slider state
 	bool bShowingSplitSlider;

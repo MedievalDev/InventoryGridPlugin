@@ -43,6 +43,7 @@ void UGridInventoryWidget::NativeConstruct()
 	SplitSliderCountLabel = nullptr;
 	PendingSplitCount = 0;
 	DragHiddenItemID.Invalidate();
+	ActiveDragVisual = nullptr;
 	bPendingDropSplit = false;
 	DropSplitItemID.Invalidate();
 	DropSplitRotated = false;
@@ -537,6 +538,10 @@ void UGridInventoryWidget::NativeOnDragDetected(const FGeometry& InGeometry, con
 	{
 		VisualItem.StackCount = DragOp->DragCount;
 	}
+
+	// Don't use DefaultDragVisual — UE4 has a known engine bug where it
+	// animates the visual 0.15s from top-left to the pivot/offset position.
+	// Instead: add visual directly to GridCanvas and position it manually.
 	UWidget* Visual = CreateItemVisual(VisualItem);
 	if (Visual)
 	{
@@ -544,21 +549,27 @@ void UGridInventoryWidget::NativeOnDragDetected(const FGeometry& InGeometry, con
 		const float PixelW = EffSize.X * CellSize;
 		const float PixelH = EffSize.Y * CellSize;
 
-		// Wrap in SizeBox with explicit dimensions so UE4's drag decorator
-		// knows the widget size on frame 1 (before any layout pass)
 		USizeBox* DragSizeBox = WidgetTree->ConstructWidget<USizeBox>();
 		DragSizeBox->SetWidthOverride(PixelW);
 		DragSizeBox->SetHeightOverride(PixelH);
 		DragSizeBox->AddChild(Visual);
-		DragOp->DefaultDragVisual = DragSizeBox;
+		DragSizeBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+		DragSizeBox->SetRenderOpacity(0.8f);
 
-		// CenterCenter pivot + offset: cursor stays at grab cell center
-		const float HalfW = PixelW * 0.5f;
-		const float HalfH = PixelH * 0.5f;
-		const float GrabCenterX = (DragOp->GrabOffset.X + 0.5f) * CellSize;
-		const float GrabCenterY = (DragOp->GrabOffset.Y + 0.5f) * CellSize;
-		DragOp->Pivot = EDragPivot::CenterCenter;
-		DragOp->Offset = FVector2D(HalfW - GrabCenterX, HalfH - GrabCenterY);
+		GridCanvas->AddChild(DragSizeBox);
+		if (UCanvasPanelSlot* CS = Cast<UCanvasPanelSlot>(DragSizeBox->Slot))
+		{
+			CS->SetAutoSize(true);
+			CS->SetZOrder(100);
+
+			// Position immediately at mouse cursor
+			const FGeometry CanvasGeo = GridCanvas->GetCachedGeometry();
+			const FVector2D LocalPos = CanvasGeo.AbsoluteToLocal(InMouseEvent.GetScreenSpacePosition());
+			const float VisX = LocalPos.X - (DragOp->GrabOffset.X + 0.5f) * CellSize;
+			const float VisY = LocalPos.Y - (DragOp->GrabOffset.Y + 0.5f) * CellSize;
+			CS->SetPosition(FVector2D(VisX, VisY));
+		}
+		ActiveDragVisual = DragSizeBox;
 	}
 
 	OutOperation = DragOp;
@@ -583,6 +594,23 @@ bool UGridInventoryWidget::NativeOnDragOver(const FGeometry& InGeometry, const F
 	if (!DragOp || !InventoryComponent || !GridCanvas) return false;
 
 	ClearAllHighlights();
+
+	// Update drag visual position to follow mouse (source widget's canvas)
+	if (DragOp->SourceWidget)
+	{
+		UGridInventoryWidget* SrcWidget = DragOp->SourceWidget;
+		if (SrcWidget->ActiveDragVisual && SrcWidget->GridCanvas)
+		{
+			const FGeometry SrcGeo = SrcWidget->GridCanvas->GetCachedGeometry();
+			const FVector2D LocalPos = SrcGeo.AbsoluteToLocal(InDragDropEvent.GetScreenSpacePosition());
+			const float VisX = LocalPos.X - (DragOp->GrabOffset.X + 0.5f) * SrcWidget->CellSize;
+			const float VisY = LocalPos.Y - (DragOp->GrabOffset.Y + 0.5f) * SrcWidget->CellSize;
+			if (UCanvasPanelSlot* CS = Cast<UCanvasPanelSlot>(SrcWidget->ActiveDragVisual->Slot))
+			{
+				CS->SetPosition(FVector2D(VisX, VisY));
+			}
+		}
+	}
 
 	const FIntPoint Cell = ScreenToCell(InDragDropEvent.GetScreenSpacePosition());
 	const FIntPoint DropPos = Cell - DragOp->GrabOffset;
@@ -632,6 +660,18 @@ void UGridInventoryWidget::NativeOnDragCancelled(const FDragDropEvent& InDragDro
 {
 	ClearAllHighlights();
 	RestoreDragHiddenVisual();
+
+	// Remove drag visual from source widget
+	UInventoryDragDropOperation* DragOp = Cast<UInventoryDragDropOperation>(InOperation);
+	if (DragOp && DragOp->SourceWidget)
+	{
+		DragOp->SourceWidget->RemoveDragVisual();
+	}
+	else
+	{
+		RemoveDragVisual();
+	}
+
 	Super::NativeOnDragCancelled(InDragDropEvent, InOperation);
 }
 
@@ -653,6 +693,15 @@ void UGridInventoryWidget::ClearDragHiddenVisual()
 	DragHiddenItemID.Invalidate();
 }
 
+void UGridInventoryWidget::RemoveDragVisual()
+{
+	if (ActiveDragVisual)
+	{
+		ActiveDragVisual->RemoveFromParent();
+		ActiveDragVisual = nullptr;
+	}
+}
+
 bool UGridInventoryWidget::NativeOnDrop(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation)
 {
 	ClearAllHighlights();
@@ -661,7 +710,14 @@ bool UGridInventoryWidget::NativeOnDrop(const FGeometry& InGeometry, const FDrag
 	if (!DragOp || !InventoryComponent || !GridCanvas)
 	{
 		RestoreDragHiddenVisual();
+		RemoveDragVisual();
 		return false;
+	}
+
+	// Remove the manually-positioned drag visual
+	if (DragOp->SourceWidget)
+	{
+		DragOp->SourceWidget->RemoveDragVisual();
 	}
 
 	const FIntPoint Cell = ScreenToCell(InDragDropEvent.GetScreenSpacePosition());
@@ -708,12 +764,14 @@ bool UGridInventoryWidget::NativeOnDrop(const FGeometry& InGeometry, const FDrag
 		{
 			DragOp->SourceWidget->RestoreDragHiddenVisual();
 		}
+		// IMPORTANT: ShowSplitSlider calls CloseSplitSlider() internally,
+		// which resets bPendingDropSplit. Set state AFTER ShowSplitSlider.
+		ShowSplitSlider(DragOp->DraggedItem, DropPos);
 		bPendingDropSplit = true;
 		DropSplitItemID = DragOp->DraggedItem.UniqueID;
 		DropSplitPosition = DropPos;
 		DropSplitRotated = bEffRot;
 		DropSplitSourceInventory = DragOp->SourceInventory;
-		ShowSplitSlider(DragOp->DraggedItem, DropPos);
 		return true;
 	}
 
