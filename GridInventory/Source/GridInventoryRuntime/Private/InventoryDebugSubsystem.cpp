@@ -98,7 +98,7 @@ void UInventoryDebugSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		&UInventoryDebugSubsystem::Cmd_SetMaxWeight);
 
 	RegisterCommand(TEXT("Inv.SetGridSize"),
-		TEXT("Inv.SetGridSize <Width> <Height> - Resize grid (clears items!)"),
+		TEXT("Inv.SetGridSize <Width> <Height> - Resize grid (preserves items, fails if they don't fit)"),
 		&UInventoryDebugSubsystem::Cmd_SetGridSize);
 
 	RegisterCommand(TEXT("Inv.Clear"),
@@ -715,22 +715,25 @@ void UInventoryDebugSubsystem::Cmd_SetGridSize(const TArray<FString>& Args, UWor
 {
 	if (Args.Num() < 2)
 	{
-		DebugPrint(TEXT("Usage: Inv.SetGridSize <Width> <Height> (WARNING: clears items!)"));
+		DebugPrint(TEXT("Usage: Inv.SetGridSize <Width> <Height>"));
 		return;
 	}
 
 	UGridInventoryComponent* Inv = GetPlayerInventory(World);
 	if (!Inv) { DebugPrintError(TEXT("No inventory")); return; }
 
-	int32 W = FMath::Clamp(FCString::Atoi(*Args[0]), 1, 100);
-	int32 H = FMath::Clamp(FCString::Atoi(*Args[1]), 1, 100);
+	const int32 W = FCString::Atoi(*Args[0]);
+	const int32 H = FCString::Atoi(*Args[1]);
 
-	Inv->ClearInventory();
-	Inv->GridWidth = W;
-	Inv->GridHeight = H;
-	Inv->InitializeGrid();
-
-	DebugPrintWarning(FString::Printf(TEXT("Grid resized to %dx%d - inventory cleared!"), W, H));
+	if (Inv->ResizeGrid(W, H))
+	{
+		DebugPrint(FString::Printf(TEXT("Grid resized to %dx%d (%d items preserved)"),
+			Inv->GridWidth, Inv->GridHeight, Inv->GetAllItems().Num()));
+	}
+	else
+	{
+		DebugPrintError(FString::Printf(TEXT("Cannot resize to %dx%d — items would not fit!"), W, H));
+	}
 }
 
 void UInventoryDebugSubsystem::Cmd_Clear(const TArray<FString>& Args, UWorld* World)

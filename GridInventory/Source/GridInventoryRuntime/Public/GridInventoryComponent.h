@@ -97,6 +97,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Grid Inventory")
 	bool RotateItem(FGuid UniqueID);
 
+	/**
+	 * Split Count items from a stack and place them at NewPosition.
+	 * Source item keeps remaining stack. New item gets a new UniqueID.
+	 * @return true if split succeeded
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory")
+	bool SplitStack(FGuid SourceID, int32 Count, FIntPoint NewPosition, bool bRotated);
+
 	/** Transfer to another inventory (auto-find slot) */
 	UFUNCTION(BlueprintCallable, Category = "Grid Inventory")
 	bool TransferItem(FGuid UniqueID, UGridInventoryComponent* TargetInventory, int32 Count = 0);
@@ -414,6 +422,13 @@ public:
 	/** Reinitialize the grid (after changing GridWidth/GridHeight at runtime). */
 	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Utility")
 	void InitializeGrid();
+
+	/**
+	 * Resize the grid at runtime. Only succeeds if all current items
+	 * fit within the new dimensions; otherwise returns false (no change).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Grid Inventory|Utility")
+	bool ResizeGrid(int32 NewWidth, int32 NewHeight);
 
 protected:
 	virtual void BeginPlay() override;

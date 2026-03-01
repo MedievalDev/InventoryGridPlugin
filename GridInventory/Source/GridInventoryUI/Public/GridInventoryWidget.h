@@ -14,6 +14,7 @@ class UInventoryContextMenuWidget;
 class UCanvasPanel;
 class USizeBox;
 class UTexture2D;
+class UTextBlock;
 
 /**
  * VIRTUALIZED inventory grid widget. Optimized for large grids (60x80+).
@@ -139,9 +140,10 @@ private:
 		int32 StackCount;
 		int32 ClassLevel;
 		bool bRotated;
+		bool bIconLoaded;
 		UWidget* Visual;
 
-		FItemVisualEntry() : StackCount(0), ClassLevel(0), bRotated(false), Visual(nullptr) {}
+		FItemVisualEntry() : StackCount(0), ClassLevel(0), bRotated(false), bIconLoaded(false), Visual(nullptr) {}
 	};
 	TMap<FGuid, FItemVisualEntry> ActiveItemVisuals;
 
@@ -154,8 +156,29 @@ private:
 	// Grid-level mouse state
 	FIntPoint PendingDragCell;
 	FGuid PendingDragItemID;
+	bool bPendingDragCtrl;
 	FIntPoint HoveredCell;
 	FGuid HoveredItemID;
+
+	// Stack-split slider state
+	bool bShowingSplitSlider;
+	FGuid SplitSliderItemID;
+	int32 SplitSliderMaxCount;
+	int32 SplitSliderCurrentCount;
+	FIntPoint SplitSliderCell;
+	int32 PendingSplitCount;
+
+	UPROPERTY()
+	UWidget* SplitSliderWidget;
+
+	UPROPERTY()
+	class UTextBlock* SplitSliderCountLabel;
+
+	UFUNCTION()
+	void OnSplitSliderValueChanged(float Value);
+
+	UFUNCTION()
+	void OnSplitSliderOKClicked();
 
 	int64 PosKey(int32 X, int32 Y) const { return (int64)Y * 10000 + X; }
 
@@ -173,6 +196,9 @@ private:
 	void CreateGridLines();
 	void ClearGridLines();
 	void CloseContextMenu();
+	void ShowSplitSlider(const FInventoryItemInstance& Item, FIntPoint Cell);
+	void CloseSplitSlider();
+	void OnSplitSliderConfirmed(int32 Count);
 
 	/** Preload all visible item icons asynchronously via FStreamableManager */
 	void PreloadVisibleIcons();
@@ -187,6 +213,10 @@ private:
 	/** Cached grid line dimensions to avoid recreating unchanged lines */
 	int32 CachedGridLineWidth;
 	int32 CachedGridLineHeight;
+
+	/** Cached inventory dimensions — detect resize at runtime */
+	int32 CachedInventoryWidth;
+	int32 CachedInventoryHeight;
 
 	UFUNCTION()
 	void OnInventoryChanged();

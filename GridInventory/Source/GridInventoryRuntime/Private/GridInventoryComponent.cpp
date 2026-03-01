@@ -336,6 +336,43 @@ bool UGridInventoryComponent::RotateItem(FGuid UniqueID)
 	return false;
 }
 
+bool UGridInventoryComponent::SplitStack(FGuid SourceID, int32 Count, FIntPoint NewPosition, bool bRotated)
+{
+	if (!SourceID.IsValid() || Count <= 0) return false;
+
+	const int32 Index = FindItemIndex(SourceID);
+	if (Index == INDEX_NONE) return false;
+
+	FInventoryItemInstance& SourceItem = Items[Index];
+	if (!SourceItem.ItemDef || !SourceItem.ItemDef->bCanStack) return false;
+	if (Count >= SourceItem.StackCount) return false; // Use MoveItem for full stack
+
+	const FIntPoint EffSize = SourceItem.ItemDef->GetEffectiveSize(bRotated);
+	if (!Grid.CanPlaceAt(NewPosition, EffSize)) return false;
+
+	// Create new item instance with split count
+	FInventoryItemInstance NewItem;
+	NewItem.UniqueID = FGuid::NewGuid();
+	NewItem.ItemDef = SourceItem.ItemDef;
+	NewItem.GridPosition = NewPosition;
+	NewItem.bIsRotated = bRotated;
+	NewItem.StackCount = Count;
+	NewItem.CurrentClassLevel = SourceItem.CurrentClassLevel;
+	NewItem.InstanceEffects = SourceItem.InstanceEffects;
+
+	// Reduce source stack
+	SourceItem.StackCount -= Count;
+
+	// Place new item on grid
+	Grid.PlaceItem(NewItem.UniqueID, NewPosition, EffSize);
+	ItemIndexMap.Add(NewItem.UniqueID, Items.Num());
+	Items.Add(NewItem);
+
+	RecalculateWeight();
+	BroadcastChanged();
+	return true;
+}
+
 bool UGridInventoryComponent::TransferItem(FGuid UniqueID, UGridInventoryComponent* TargetInventory, int32 Count)
 {
 	if (!TargetInventory || !UniqueID.IsValid() || TargetInventory == this) return false;
@@ -776,6 +813,51 @@ void UGridInventoryComponent::InitializeGrid()
 {
 	ClearInventory();
 	Grid.Initialize(GridWidth, GridHeight);
+}
+
+bool UGridInventoryComponent::ResizeGrid(int32 NewWidth, int32 NewHeight)
+{
+	NewWidth = FMath::Clamp(NewWidth, 1, 80);
+	NewHeight = FMath::Clamp(NewHeight, 1, 80);
+
+	if (NewWidth == GridWidth && NewHeight == GridHeight)
+	{
+		return true;
+	}
+
+	// Verify all items fit within the new dimensions
+	for (const FInventoryItemInstance& Item : Items)
+	{
+		if (!Item.IsValid()) continue;
+
+		const FIntPoint EffSize = Item.GetEffectiveSize();
+		if (Item.GridPosition.X + EffSize.X > NewWidth || Item.GridPosition.Y + EffSize.Y > NewHeight)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[GridInventory] ResizeGrid: Item '%s' at (%d,%d) size (%d,%d) would not fit in %dx%d"),
+				*Item.ItemDef->DisplayName.ToString(),
+				Item.GridPosition.X, Item.GridPosition.Y,
+				EffSize.X, EffSize.Y, NewWidth, NewHeight);
+			return false;
+		}
+	}
+
+	// All items fit — reinitialize the grid and re-place items
+	GridWidth = NewWidth;
+	GridHeight = NewHeight;
+	Grid.Initialize(GridWidth, GridHeight);
+
+	for (const FInventoryItemInstance& Item : Items)
+	{
+		if (!Item.IsValid()) continue;
+		const FIntPoint EffSize = Item.GetEffectiveSize();
+		Grid.PlaceItem(Item.UniqueID, Item.GridPosition, EffSize);
+	}
+
+	BroadcastChanged();
+
+	UE_LOG(LogTemp, Log, TEXT("[GridInventory] ResizeGrid: Grid resized to %dx%d with %d items"),
+		GridWidth, GridHeight, Items.Num());
+	return true;
 }
 
 // ============================================================================

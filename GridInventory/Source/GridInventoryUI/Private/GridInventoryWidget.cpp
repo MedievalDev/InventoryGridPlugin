@@ -12,6 +12,10 @@
 #include "Components/SizeBox.h"
 #include "Components/Overlay.h"
 #include "Components/TextBlock.h"
+#include "Components/Slider.h"
+#include "Components/Border.h"
+#include "Components/HorizontalBox.h"
+#include "Components/Button.h"
 #include "Blueprint/WidgetTree.h"
 #include "Engine/StreamableManager.h"
 #include "Engine/AssetManager.h"
@@ -29,6 +33,13 @@ void UGridInventoryWidget::NativeConstruct()
 	ResolvedSlotWidgetClass = nullptr;
 	CachedGridLineWidth = 0;
 	CachedGridLineHeight = 0;
+	CachedInventoryWidth = 0;
+	CachedInventoryHeight = 0;
+	bPendingDragCtrl = false;
+	bShowingSplitSlider = false;
+	SplitSliderWidget = nullptr;
+	SplitSliderCountLabel = nullptr;
+	PendingSplitCount = 0;
 
 	// Make this widget hittable and focusable — grid handles all mouse events
 	bIsFocusable = true;
@@ -44,6 +55,7 @@ void UGridInventoryWidget::NativeConstruct()
 
 void UGridInventoryWidget::NativeDestruct()
 {
+	CloseSplitSlider();
 	CloseContextMenu();
 
 	// Cancel any in-flight async icon loads
@@ -84,6 +96,8 @@ void UGridInventoryWidget::SetInventoryComponent(UGridInventoryComponent* InInve
 		// Initialize with full visible area (will be narrowed by UpdateVisibleArea)
 		VisibleMin = FIntPoint(0, 0);
 		VisibleMax = FIntPoint(InventoryComponent->GridWidth, InventoryComponent->GridHeight);
+		CachedInventoryWidth = InventoryComponent->GridWidth;
+		CachedInventoryHeight = InventoryComponent->GridHeight;
 
 		// Re-enforce hittable state — Blueprint calls may have changed visibility
 		SetVisibility(ESlateVisibility::Visible);
@@ -343,10 +357,11 @@ void UGridInventoryWidget::SetupHitTestConfiguration()
 
 FReply UGridInventoryWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
-	// Close any open context menu on left-click
+	// Close any open context menu or split slider on left-click
 	if (InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
 	{
 		CloseContextMenu();
+		CloseSplitSlider();
 	}
 
 	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] MouseDown — InventoryComponent=%s, GridCanvas=%s"),
@@ -375,9 +390,21 @@ FReply UGridInventoryWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry
 	{
 		if (Item.IsValid())
 		{
+			const FModifierKeysState& Mods = InMouseEvent.GetModifierKeys();
+			const bool bCtrl = Mods.IsControlDown();
+			const bool bAlt = Mods.IsAltDown();
+
+			// Alt+Click on stackable item: show split slider
+			if (bAlt && Item.ItemDef->bCanStack && Item.StackCount > 1)
+			{
+				ShowSplitSlider(Item, Cell);
+				return FReply::Handled();
+			}
+
 			// Store drag info for NativeOnDragDetected
 			PendingDragCell = Cell;
 			PendingDragItemID = Item.UniqueID;
+			bPendingDragCtrl = bCtrl;
 			OnItemClicked(Item, CellX, CellY);
 
 			// UE 4.27: use DetectDrag instead of CaptureMouse
@@ -467,14 +494,40 @@ void UGridInventoryWidget::NativeOnDragDetected(const FGeometry& InGeometry, con
 	DragOp->SourceInventory = InventoryComponent;
 	DragOp->bDragRotated = false;
 	DragOp->GrabOffset = PendingDragCell - Item.GridPosition;
-	DragOp->DragCount = 0; // entire stack
 
-	// Create drag visual
-	UWidget* Visual = CreateItemVisual(Item);
+	// Stack-splitting logic:
+	// - PendingSplitCount > 0: from slider (Alt+Click)
+	// - Ctrl: entire stack
+	// - Default: pick up 1 from stackable items
+	if (PendingSplitCount > 0 && PendingSplitCount < Item.StackCount)
+	{
+		DragOp->DragCount = PendingSplitCount;
+		PendingSplitCount = 0;
+	}
+	else if (Item.ItemDef->bCanStack && Item.StackCount > 1 && !bPendingDragCtrl)
+	{
+		DragOp->DragCount = 1;
+	}
+	else
+	{
+		DragOp->DragCount = 0; // 0 = entire stack
+	}
+
+	// Create drag visual with correct stack count
+	FInventoryItemInstance VisualItem = Item;
+	if (DragOp->DragCount > 0)
+	{
+		VisualItem.StackCount = DragOp->DragCount;
+	}
+	UWidget* Visual = CreateItemVisual(VisualItem);
 	if (Visual)
 	{
 		DragOp->DefaultDragVisual = Visual;
-		DragOp->Pivot = EDragPivot::MouseDown;
+		DragOp->Pivot = EDragPivot::TopLeft;
+		DragOp->Offset = FVector2D(
+			-DragOp->GrabOffset.X * CellSize,
+			-DragOp->GrabOffset.Y * CellSize
+		);
 	}
 
 	// Remove the item from its current position so the grid shows it as free
@@ -524,6 +577,11 @@ bool UGridInventoryWidget::NativeOnDrop(const FGeometry& InGeometry, const FDrag
 
 	if (DragOp->SourceInventory == InventoryComponent)
 	{
+		// Partial stack: split instead of move
+		if (DragOp->DragCount > 0 && DragOp->DragCount < DragOp->DraggedItem.StackCount)
+		{
+			return InventoryComponent->SplitStack(DragOp->DraggedItem.UniqueID, DragOp->DragCount, DropPos, bEffRot);
+		}
 		return InventoryComponent->MoveItem(DragOp->DraggedItem.UniqueID, DropPos, bEffRot);
 	}
 
@@ -665,9 +723,14 @@ void UGridInventoryWidget::RefreshVisibleItems()
 		FItemVisualEntry* Existing = ActiveItemVisuals.Find(Item.UniqueID);
 		if (Existing)
 		{
-			// Only rebuild if something changed (position, rotation, stack, class level)
+			// Check if icon became available since visual was created
+			const bool bIconNowAvailable = (Item.ItemDef && !Item.ItemDef->Icon.IsNull())
+				? (GetCachedIcon(Item.ItemDef->Icon) != nullptr) : true;
+
+			// Only rebuild if something changed (position, rotation, stack, class level, icon)
 			if (Existing->Position == Pos && Existing->bRotated == Item.bIsRotated
-				&& Existing->StackCount == Item.StackCount && Existing->ClassLevel == Item.CurrentClassLevel)
+				&& Existing->StackCount == Item.StackCount && Existing->ClassLevel == Item.CurrentClassLevel
+				&& (Existing->bIconLoaded || !bIconNowAvailable))
 			{
 				continue; // No change — skip
 			}
@@ -705,6 +768,8 @@ void UGridInventoryWidget::RefreshVisibleItems()
 		Entry.StackCount = Item.StackCount;
 		Entry.ClassLevel = Item.CurrentClassLevel;
 		Entry.bRotated = Item.bIsRotated;
+		Entry.bIconLoaded = (Item.ItemDef && !Item.ItemDef->Icon.IsNull())
+			? (GetCachedIcon(Item.ItemDef->Icon) != nullptr) : true;
 		Entry.Visual = SB;
 		ActiveItemVisuals.Add(Item.UniqueID, Entry);
 	}
@@ -929,6 +994,21 @@ UClass* UGridInventoryWidget::GetSlotWidgetClass()
 
 void UGridInventoryWidget::OnInventoryChanged()
 {
+	if (!InventoryComponent) return;
+
+	// Detect grid resize and rebuild everything if dimensions changed
+	if (InventoryComponent->GridWidth != CachedInventoryWidth
+		|| InventoryComponent->GridHeight != CachedInventoryHeight)
+	{
+		CachedInventoryWidth = InventoryComponent->GridWidth;
+		CachedInventoryHeight = InventoryComponent->GridHeight;
+		VisibleMax = FIntPoint(InventoryComponent->GridWidth, InventoryComponent->GridHeight);
+		ClearItemVisuals();
+		CachedGridLineWidth = 0;
+		CachedGridLineHeight = 0;
+		RefreshGrid();
+	}
+
 	// Preload icons for any new items asynchronously
 	PreloadVisibleIcons();
 	RefreshItems();
@@ -940,4 +1020,125 @@ void UGridInventoryWidget::UnbindFromInventory()
 	{
 		InventoryComponent->OnInventoryChanged.RemoveDynamic(this, &UGridInventoryWidget::OnInventoryChanged);
 	}
+}
+
+// ============================================================================
+// Stack-Split Slider
+// ============================================================================
+
+void UGridInventoryWidget::ShowSplitSlider(const FInventoryItemInstance& Item, FIntPoint Cell)
+{
+	CloseSplitSlider();
+	if (!GridCanvas || !WidgetTree) return;
+
+	bShowingSplitSlider = true;
+	SplitSliderItemID = Item.UniqueID;
+	SplitSliderMaxCount = Item.StackCount;
+	SplitSliderCurrentCount = 1;
+	SplitSliderCell = Cell;
+
+	// Build slider UI: [count / max] [----slider----] [OK]
+	UBorder* Background = WidgetTree->ConstructWidget<UBorder>();
+	Background->SetBrushColor(FLinearColor(0.05f, 0.05f, 0.05f, 0.92f));
+	Background->SetPadding(FMargin(8.f));
+	Background->SetVisibility(ESlateVisibility::Visible);
+
+	UHorizontalBox* HBox = WidgetTree->ConstructWidget<UHorizontalBox>();
+	Background->AddChild(HBox);
+
+	// Count label
+	SplitSliderCountLabel = WidgetTree->ConstructWidget<UTextBlock>();
+	SplitSliderCountLabel->SetText(FText::Format(
+		FText::FromString(TEXT("{0}/{1}")),
+		FText::AsNumber(1), FText::AsNumber(SplitSliderMaxCount - 1)));
+	FSlateFontInfo CountFont = SplitSliderCountLabel->Font;
+	CountFont.Size = 14;
+	SplitSliderCountLabel->SetFont(CountFont);
+	SplitSliderCountLabel->SetColorAndOpacity(FSlateColor(FLinearColor::White));
+	UHorizontalBoxSlot* CountBoxSlot = HBox->AddChildToHorizontalBox(SplitSliderCountLabel);
+	CountBoxSlot->SetPadding(FMargin(0.f, 0.f, 8.f, 0.f));
+	CountBoxSlot->SetVerticalAlignment(VAlign_Center);
+
+	// Slider (UE4.27: set properties directly, not via setters)
+	USlider* SliderCtrl = WidgetTree->ConstructWidget<USlider>();
+	SliderCtrl->MinValue = 1.f;
+	SliderCtrl->MaxValue = (float)(SplitSliderMaxCount - 1);
+	SliderCtrl->StepSize = 1.f;
+	SliderCtrl->SetValue(1.f);
+	SliderCtrl->SliderBarColor = FLinearColor(0.3f, 0.3f, 0.3f, 1.f);
+	SliderCtrl->SliderHandleColor = FLinearColor(0.8f, 0.6f, 0.1f, 1.f);
+	SliderCtrl->OnValueChanged.AddDynamic(this, &UGridInventoryWidget::OnSplitSliderValueChanged);
+	UHorizontalBoxSlot* SliderBoxSlot = HBox->AddChildToHorizontalBox(SliderCtrl);
+	SliderBoxSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+	SliderBoxSlot->SetVerticalAlignment(VAlign_Center);
+
+	// OK button
+	UButton* OkButton = WidgetTree->ConstructWidget<UButton>();
+	OkButton->SetBackgroundColor(FLinearColor(0.2f, 0.5f, 0.2f, 1.f));
+	OkButton->OnClicked.AddDynamic(this, &UGridInventoryWidget::OnSplitSliderOKClicked);
+	UTextBlock* OkText = WidgetTree->ConstructWidget<UTextBlock>();
+	OkText->SetText(FText::FromString(TEXT("OK")));
+	FSlateFontInfo OkFont = OkText->Font;
+	OkFont.Size = 14;
+	OkText->SetFont(OkFont);
+	OkButton->AddChild(OkText);
+	UHorizontalBoxSlot* OkBoxSlot = HBox->AddChildToHorizontalBox(OkButton);
+	OkBoxSlot->SetVerticalAlignment(VAlign_Center);
+	OkBoxSlot->SetSize(FSlateChildSize(ESlateSizeRule::Automatic));
+	OkBoxSlot->SetPadding(FMargin(8.f, 0.f, 0.f, 0.f));
+
+	// Position above the clicked cell
+	GridCanvas->AddChild(Background);
+	if (UCanvasPanelSlot* CS = Cast<UCanvasPanelSlot>(Background->Slot))
+	{
+		CS->SetAutoSize(true);
+		CS->SetPosition(FVector2D(Cell.X * CellSize, (Cell.Y - 1) * CellSize));
+		CS->SetSize(FVector2D(CellSize * 4, CellSize * 0.6f));
+	}
+
+	SplitSliderWidget = Background;
+}
+
+void UGridInventoryWidget::CloseSplitSlider()
+{
+	if (bShowingSplitSlider && SplitSliderWidget)
+	{
+		SplitSliderWidget->RemoveFromParent();
+		SplitSliderWidget = nullptr;
+		SplitSliderCountLabel = nullptr;
+	}
+	bShowingSplitSlider = false;
+	SplitSliderItemID.Invalidate();
+}
+
+void UGridInventoryWidget::OnSplitSliderValueChanged(float Value)
+{
+	SplitSliderCurrentCount = FMath::RoundToInt(Value);
+	if (SplitSliderCountLabel)
+	{
+		SplitSliderCountLabel->SetText(FText::Format(
+			FText::FromString(TEXT("{0}/{1}")),
+			FText::AsNumber(SplitSliderCurrentCount),
+			FText::AsNumber(SplitSliderMaxCount - 1)));
+	}
+}
+
+void UGridInventoryWidget::OnSplitSliderOKClicked()
+{
+	OnSplitSliderConfirmed(SplitSliderCurrentCount);
+}
+
+void UGridInventoryWidget::OnSplitSliderConfirmed(int32 Count)
+{
+	if (!InventoryComponent || !SplitSliderItemID.IsValid() || Count <= 0) return;
+
+	// Store the split count — will be used by next drag on this item
+	PendingSplitCount = Count;
+	PendingDragItemID = SplitSliderItemID;
+	PendingDragCell = SplitSliderCell;
+	bPendingDragCtrl = false;
+
+	CloseSplitSlider();
+
+	UE_LOG(LogTemp, Log, TEXT("[GridInventory] SplitSlider: %d selected — click and drag the item to place"), Count);
 }
