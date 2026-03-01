@@ -101,6 +101,12 @@ void UGridInventoryWidget::SetInventoryComponent(UGridInventoryComponent* InInve
 	{
 		InventoryComponent->OnInventoryChanged.AddDynamic(this, &UGridInventoryWidget::OnInventoryChanged);
 
+		// Read CellSize from component (overrides widget default)
+		if (InventoryComponent->CellSize > 0.0f)
+		{
+			CellSize = InventoryComponent->CellSize;
+		}
+
 		// Initialize with full visible area (will be narrowed by UpdateVisibleArea)
 		VisibleMin = FIntPoint(0, 0);
 		VisibleMax = FIntPoint(InventoryComponent->GridWidth, InventoryComponent->GridHeight);
@@ -562,7 +568,7 @@ void UGridInventoryWidget::NativeOnDragDetected(const FGeometry& InGeometry, con
 			CS->SetAutoSize(true);
 			CS->SetZOrder(100);
 
-			// Position immediately at mouse cursor
+			// Position at mouse cursor, offset by grab point within the item
 			const FGeometry CanvasGeo = GridCanvas->GetCachedGeometry();
 			const FVector2D LocalPos = CanvasGeo.AbsoluteToLocal(InMouseEvent.GetScreenSpacePosition());
 			const float VisX = LocalPos.X - (DragOp->GrabOffset.X + 0.5f) * CellSize;
@@ -570,6 +576,9 @@ void UGridInventoryWidget::NativeOnDragDetected(const FGeometry& InGeometry, con
 			CS->SetPosition(FVector2D(VisX, VisY));
 		}
 		ActiveDragVisual = DragSizeBox;
+
+		UE_LOG(LogTemp, Log, TEXT("[GridInventory] DragVisual created at grid (%d,%d), size (%.0fx%.0f)"),
+			Item.GridPosition.X, Item.GridPosition.Y, PixelW, PixelH);
 	}
 
 	OutOperation = DragOp;
@@ -595,7 +604,12 @@ bool UGridInventoryWidget::NativeOnDragOver(const FGeometry& InGeometry, const F
 
 	ClearAllHighlights();
 
-	// Update drag visual position to follow mouse (source widget's canvas)
+	const FIntPoint Cell = ScreenToCell(InDragDropEvent.GetScreenSpacePosition());
+	const FIntPoint DropPos = Cell - DragOp->GrabOffset;
+	const FIntPoint Size = DragOp->GetEffectiveDragSize();
+	const bool bEffRot = DragOp->DraggedItem.bIsRotated != DragOp->bDragRotated;
+
+	// Update drag visual position to follow mouse (pixel-precise on source widget)
 	if (DragOp->SourceWidget)
 	{
 		UGridInventoryWidget* SrcWidget = DragOp->SourceWidget;
@@ -612,11 +626,16 @@ bool UGridInventoryWidget::NativeOnDragOver(const FGeometry& InGeometry, const F
 		}
 	}
 
-	const FIntPoint Cell = ScreenToCell(InDragDropEvent.GetScreenSpacePosition());
-	const FIntPoint DropPos = Cell - DragOp->GrabOffset;
-	const FIntPoint Size = DragOp->GetEffectiveDragSize();
-	const bool bEffRot = DragOp->DraggedItem.bIsRotated != DragOp->bDragRotated;
-	const bool bCanPlace = InventoryComponent->CanPlaceAt(DragOp->DraggedItem.ItemDef, DropPos, bEffRot);
+	// Use CanPlaceAtIgnoring for same-inventory moves so the dragged item's cells don't block placement
+	bool bCanPlace = false;
+	if (DragOp->SourceInventory == InventoryComponent && DragOp->DragCount == 0)
+	{
+		bCanPlace = InventoryComponent->CanPlaceAtIgnoring(DragOp->DraggedItem.ItemDef, DropPos, bEffRot, DragOp->DraggedItem.UniqueID);
+	}
+	else
+	{
+		bCanPlace = InventoryComponent->CanPlaceAt(DragOp->DraggedItem.ItemDef, DropPos, bEffRot);
+	}
 
 	if (bCanPlace)
 	{
@@ -1424,15 +1443,22 @@ void UGridInventoryWidget::OnSplitSliderConfirmed(int32 Count)
 	// New workflow: directly execute split at the drop position
 	if (bPendingDropSplit && DropSplitSourceInventory && DropSplitItemID.IsValid())
 	{
+		bool bSplitOK = false;
 		if (DropSplitSourceInventory == InventoryComponent)
 		{
-			InventoryComponent->SplitStack(DropSplitItemID, Count, DropSplitPosition, DropSplitRotated);
+			bSplitOK = InventoryComponent->SplitStack(DropSplitItemID, Count, DropSplitPosition, DropSplitRotated);
 		}
 		else
 		{
-			DropSplitSourceInventory->TransferItemTo(DropSplitItemID, InventoryComponent, DropSplitPosition, DropSplitRotated, Count);
+			bSplitOK = DropSplitSourceInventory->TransferItemTo(DropSplitItemID, InventoryComponent, DropSplitPosition, DropSplitRotated, Count);
 		}
-		UE_LOG(LogTemp, Log, TEXT("[GridInventory] SplitSlider: split %d at (%d,%d)"), Count, DropSplitPosition.X, DropSplitPosition.Y);
+		UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SplitSlider: split %d at (%d,%d) → %s"),
+			Count, DropSplitPosition.X, DropSplitPosition.Y, bSplitOK ? TEXT("OK") : TEXT("FAILED"));
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SplitSlider: state invalid — bPendingDropSplit=%d, SourceInv=%p, ItemID=%s"),
+			bPendingDropSplit ? 1 : 0, DropSplitSourceInventory, *DropSplitItemID.ToString());
 	}
 
 	bPendingDropSplit = false;

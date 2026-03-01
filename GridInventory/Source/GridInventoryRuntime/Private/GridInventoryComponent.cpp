@@ -15,6 +15,7 @@ UGridInventoryComponent::UGridInventoryComponent()
 	: GridWidth(10)
 	, GridHeight(10)
 	, MaxWeight(0.0f)
+	, CellSize(64.0f)
 	, CachedWeight(0.0f)
 	, InternalGold(0.0f)
 	, ExternalGoldPtr(nullptr)
@@ -783,6 +784,12 @@ bool UGridInventoryComponent::CanPlaceAt(UInventoryItemDefinition* ItemDef, FInt
 {
 	if (!ItemDef) return false;
 	return Grid.CanPlaceAt(Position, ItemDef->GetEffectiveSize(bRotated));
+}
+
+bool UGridInventoryComponent::CanPlaceAtIgnoring(UInventoryItemDefinition* ItemDef, FIntPoint Position, bool bRotated, FGuid IgnoreID) const
+{
+	if (!ItemDef) return false;
+	return Grid.CanPlaceAtIgnoring(Position, ItemDef->GetEffectiveSize(bRotated), IgnoreID);
 }
 
 int32 UGridInventoryComponent::GetFreeCellCount() const { return Grid.GetFreeCellCount(); }

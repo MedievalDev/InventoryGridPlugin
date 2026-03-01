@@ -44,6 +44,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grid Inventory|Config", meta = (ClampMin = "0.0"))
 	float MaxWeight;
 
+	/** Cell size in pixels for the grid UI. The widget reads this value on init. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid Inventory|Config", meta = (ClampMin = "16.0", ClampMax = "256.0"))
+	float CellSize;
+
 	// ========================
 	// Events
 	// ========================
@@ -265,6 +269,10 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Query")
 	bool CanPlaceAt(UInventoryItemDefinition* ItemDef, FIntPoint Position, bool bRotated) const;
+
+	/** Check if item can be placed, ignoring a specific item (for same-inventory moves) */
+	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Query")
+	bool CanPlaceAtIgnoring(UInventoryItemDefinition* ItemDef, FIntPoint Position, bool bRotated, FGuid IgnoreID) const;
 
 	/** Get number of free cells */
 	UFUNCTION(BlueprintPure, Category = "Grid Inventory|Query")
