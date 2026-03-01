@@ -36,10 +36,35 @@ void AInventoryContainer::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// Pre-fill with editor-configured default items
+	// 1. Pre-fill with editor-configured default items (always added)
 	if (DefaultItems.Num() > 0 && InventoryComponent)
 	{
 		InventoryComponent->TryAddItemsBatch(DefaultItems);
+	}
+
+	// 2. Generate random default items (based on SpawnChance * DropWeightMultiplier)
+	if (RandomDefaultItems.Num() > 0 && InventoryComponent)
+	{
+		GenerateRandomDefaults();
+	}
+}
+
+void AInventoryContainer::GenerateRandomDefaults()
+{
+	if (!InventoryComponent) return;
+
+	for (const FRandomItemEntry& Entry : RandomDefaultItems)
+	{
+		if (!Entry.ItemDef || Entry.SpawnChance <= 0.0f) continue;
+
+		// Multiply spawn chance by container's weight multiplier
+		const float AdjustedChance = FMath::Clamp(Entry.SpawnChance * DropWeightMultiplier, 0.0f, 1.0f);
+
+		if (FMath::FRand() <= AdjustedChance)
+		{
+			const int32 Count = FMath::RandRange(Entry.MinCount, FMath::Max(Entry.MinCount, Entry.MaxCount));
+			InventoryComponent->TryAddItem(Entry.ItemDef, Count);
+		}
 	}
 }
 

@@ -3,6 +3,7 @@
 #include "TradePanelWidget.h"
 #include "GridInventoryWidget.h"
 #include "GridInventoryComponent.h"
+#include "MerchantActor.h"
 #include "InventoryItemDefinition.h"
 #include "InventoryItemInstance.h"
 #include "Components/TextBlock.h"
@@ -32,6 +33,18 @@ void UTradePanelWidget::NativeDestruct()
 	}
 
 	Super::NativeDestruct();
+}
+
+void UTradePanelWidget::OpenTradeWithMerchant(UGridInventoryComponent* PlayerInv, AMerchantActor* Merchant)
+{
+	if (!PlayerInv || !Merchant || !Merchant->MerchantInventory) return;
+
+	// Copy price multipliers from the merchant actor
+	BuyPriceMultiplier = Merchant->BuyPriceMultiplier;
+	SellPriceMultiplier = Merchant->SellPriceMultiplier;
+
+	// Delegate to the standard OpenTrade
+	OpenTrade(PlayerInv, Merchant->MerchantInventory, Merchant->MerchantName);
 }
 
 void UTradePanelWidget::OpenTrade(UGridInventoryComponent* PlayerInv, UGridInventoryComponent* MerchantInv, FText MerchantName)

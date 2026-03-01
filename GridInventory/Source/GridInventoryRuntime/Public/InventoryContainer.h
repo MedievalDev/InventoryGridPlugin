@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "InventoryGrid.h"
+#include "RandomItemEntry.h"
 #include "InventoryContainer.generated.h"
 
 class UGridInventoryComponent;
@@ -122,6 +123,29 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Container|Default Items")
 	TArray<FItemAddRequest> DefaultItems;
+
+	// ========================
+	// Random Default Items
+	// ========================
+
+	/**
+	 * Items that may randomly appear in this container at game start.
+	 * Each entry has a SpawnChance (0-1) and a MinCount/MaxCount range.
+	 * SpawnChance is multiplied by DropWeightMultiplier.
+	 *
+	 * Example: Heilkraut with SpawnChance 0.5, Min 1, Max 3
+	 * -> 50% chance to appear, if it does: 1-3 items.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Container|Random Items")
+	TArray<FRandomItemEntry> RandomDefaultItems;
+
+	/**
+	 * Generate random items from the RandomDefaultItems list.
+	 * Called automatically in BeginPlay. Can be called again to add more random items.
+	 * Respects DropWeightMultiplier.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Container|Random Items")
+	void GenerateRandomDefaults();
 
 	// ========================
 	// State

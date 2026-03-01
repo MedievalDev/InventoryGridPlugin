@@ -458,8 +458,46 @@ Beispiel:
 
 **Reihenfolge:**
 1. Bei Spielstart → Default Items werden ins Container-Inventar geladen
-2. Beim ersten Öffnen → LootTable generiert zusätzliche Items
-3. Bei Save/Load → Gespeicherter Zustand wird wiederhergestellt
+2. Bei Spielstart → Random Default Items werden gewürfelt und hinzugefügt
+3. Beim ersten Öffnen → LootTable generiert zusätzliche Items
+4. Bei Save/Load → Gespeicherter Zustand wird wiederhergestellt
+
+## 8.5 Random Default Items (zufällige Items)
+
+Zusätzlich zu den festen Default Items können Container auch **zufällige** Items enthalten.
+Jedes Item hat eine Spawn-Chance und eine zufällige Menge.
+
+1. Truhe im Level auswählen
+2. Im Details-Panel → **Container | Random Items** → **RandomDefaultItems** → **+** klicken
+3. Pro Eintrag:
+
+| Property | Wert | Beschreibung |
+|----------|------|-------------|
+| Item Def | DA_Heiltrank | Welches Item |
+| Min Count | 1 | Mindestmenge wenn es erscheint |
+| Max Count | 5 | Maximalmenge wenn es erscheint |
+| Spawn Chance | 0.5 | 0.0 = nie, 1.0 = immer, 0.5 = 50% |
+
+Beispiel — Truhe mit gemischtem Loot:
+
+| # | Item Def | Min | Max | Chance |
+|---|----------|-----|-----|--------|
+| 0 | DA_Heiltrank | 1 | 3 | 0.8 |
+| 1 | DA_Goldmuenze | 5 | 20 | 0.6 |
+| 2 | DA_SeltenesAmulett | 1 | 1 | 0.1 |
+
+> **DropWeightMultiplier wirkt auf Random Items!**
+> Eine Truhe mit `DropWeightMultiplier = 2.0` verdoppelt die Spawn-Chance.
+> Ein Item mit SpawnChance 0.3 hat dann effektiv 0.6 (60% Chance).
+> SpawnChance wird maximal auf 1.0 begrenzt.
+
+> **Kombinierbar:** DefaultItems (immer) + RandomDefaultItems (zufällig) + LootTable (zufällig, auf erstem Öffnen).
+
+**Blueprint-Aufruf (optional):**
+Man kann `GenerateRandomDefaults()` auch manuell aufrufen, z.B. um Random Items neu zu würfeln:
+```
+Get Container Reference → Generate Random Defaults
+```
 
 ---
 
@@ -668,33 +706,65 @@ Das Trade-System zeigt zwei Inventare nebeneinander: Spieler und Händler. Items
 - **Kaufpreis** = BaseValue × StackCount × BuyPriceMultiplier (Standard: 1.0)
 - **Verkaufspreis** = BaseValue × StackCount × SellPriceMultiplier (Standard: 0.5)
 
-## 11.2 NPC-Händler einrichten
+## 11.2 NPC-Händler einrichten (MerchantActor)
 
-Ein NPC-Händler ist einfach ein Actor mit einem eigenen **GridInventoryComponent**:
+Das Plugin enthält einen fertigen **MerchantActor** — alles wird im Details-Panel konfiguriert, kein Blueprint-Scripting nötig:
 
-1. Erstelle einen neuen Actor Blueprint: `BP_Haendler`
-2. Add Component → **GridInventoryComponent**
-3. Konfiguriere:
-   - Grid Width: 8
-   - Grid Height: 6
-4. Add Component → **Static Mesh** (z.B. Charakter-Mesh)
-5. Add Component → **Box Collision** (Interaktions-Reichweite)
+1. Content Browser → Rechtsklick → Blueprint Class → Suche: **MerchantActor**
+2. Name: `BP_Haendler`
+3. Öffne den Blueprint, füge hinzu:
+   - Add Component → **Static Mesh** (z.B. Charakter-Mesh)
+   - Add Component → **Box Collision** (Interaktions-Reichweite)
+4. Wähle den BP_Haendler aus → im **Details-Panel** konfigurieren:
+
+| Kategorie | Property | Wert | Beschreibung |
+|-----------|----------|------|-------------|
+| Merchant | Merchant Name | "Kräuterhändler" | Name im Trade-Panel |
+| Merchant\|Save | Merchant ID | "Haendler_01" | Eindeutig für Save/Load |
+| Merchant\|Pricing | Buy Price Multiplier | 1.0 | Kaufpreis = BaseValue × 1.0 |
+| Merchant\|Pricing | Sell Price Multiplier | 0.5 | Verkaufspreis = BaseValue × 0.5 |
+| Merchant\|Gold | Starting Gold | 5000 | Wie viel Gold der Händler hat |
+
+> **Preisbeispiel:** Ein Schwert mit BaseValue 100:
+> - Kaufen: 100 × 1.0 = **100 Gold**
+> - Verkaufen: 100 × 0.5 = **50 Gold**
+> - Teurer Händler (BuyPriceMultiplier 1.5): Kaufen = **150 Gold**
 
 ## 11.3 Händler-Inventar befüllen
 
-Im `BP_Haendler` Blueprint → Event Graph:
+### Feste Items (immer verfügbar)
 
+Im Details-Panel → **Merchant | Stock** → **DefaultStock** → **+** klicken:
+
+| # | Item Def | Count |
+|---|----------|-------|
+| 0 | DA_Heiltrank | 10 |
+| 1 | DA_Manatrank | 5 |
+| 2 | DA_Eisenschwert | 1 |
+
+Diese Items sind IMMER im Händler-Inventar.
+
+### Zufällige Items (Random Stock)
+
+Im Details-Panel → **Merchant | Stock** → **RandomStock** → **+** klicken:
+
+| # | Item Def | Min | Max | Chance |
+|---|----------|-----|-----|--------|
+| 0 | DA_SeltenerTrank | 1 | 2 | 0.3 |
+| 1 | DA_Magisches_Amulett | 1 | 1 | 0.1 |
+| 2 | DA_Gift | 1 | 3 | 0.5 |
+
+Diese Items erscheinen **zufällig** — SpawnChance 0.3 = 30% Wahrscheinlichkeit.
+
+### Restock (Händler auffüllen)
+
+Der Händler kann per Blueprint aufgefrischt werden:
 ```
-Event Begin Play
-  │
-  ├→ Get Grid Inventory Component
-  │
-  ├→ Set Gold (Amount: 5000)          ← Händler hat 5000 Gold
-  │
-  ├→ Try Add Item (ItemDef: DA_Heiltrank, Count: 10)
-  ├→ Try Add Item (ItemDef: DA_Manatrank, Count: 5)
-  └→ Try Add Item (ItemDef: DA_Eisenschwert, Count: 1)
+Get BP_Haendler → Restock Merchant
 ```
+Dies leert das Inventar, setzt Gold zurück und generiert Default + Random Stock neu.
+
+**Event:** `OnMerchantRestocked` wird gefeuert wenn der Restock abgeschlossen ist.
 
 ## 11.4 WBP_TradePanel erstellen
 
@@ -747,6 +817,8 @@ Event Begin Play
 
 Im ThirdPersonCharacter (oder wo du Interaktion handhabst):
 
+### Methode 1: Mit MerchantActor (empfohlen)
+
 ```
 Keyboard F (Pressed)    ← oder dein Interaktions-Key
   │
@@ -754,22 +826,36 @@ Keyboard F (Pressed)    ← oder dein Interaktions-Key
   │    Start: Camera Location
   │    End: Camera Location + Forward × 300
   │
-  ├→ Hit Actor → Cast to BP_Haendler
+  ├→ Hit Actor → Cast to BP_Haendler (MerchantActor)
   │
   └─ Cast Success:
       │
       ├→ Create Widget (Class: WBP_TradePanel)
       │    → Promote to Variable: "TradePanel"
       │
-      ├→ TradePanel → Open Trade
+      ├→ TradePanel → Open Trade With Merchant
       │    Player Inv: Get Grid Inventory Component (Self)
-      │    Merchant Inv: BP_Haendler → Get Grid Inventory Component
-      │    Merchant Name: "Kräuterhändler"
+      │    Merchant: BP_Haendler (Cast-Ergebnis)
       │
       ├→ TradePanel → Add to Viewport
       │
       └→ Set Input Mode Game And UI (Hide Cursor: false)
 ```
+
+> **Vorteil:** `Open Trade With Merchant` übernimmt automatisch den MerchantName,
+> BuyPriceMultiplier und SellPriceMultiplier vom MerchantActor.
+> Kein manuelles Setzen der Preise nötig!
+
+### Methode 2: Manuell mit beliebigem Inventar
+
+```
+TradePanel → Open Trade
+    Player Inv: Get Grid Inventory Component (Self)
+    Merchant Inv: Anderes GridInventoryComponent
+    Merchant Name: "Kräuterhändler"
+```
+
+Diese Methode funktioniert mit jedem GridInventoryComponent, nicht nur MerchantActors.
 
 ## 11.6 Items kaufen und verkaufen
 
@@ -1144,6 +1230,7 @@ MeinProjekt/
     Blueprints/
       BP_WorldPickup.uasset
       BP_Truhe.uasset
+      BP_Haendler.uasset          (MerchantActor)
     UI/
       WBP_Inventory.uasset
       WBP_InventorySlot.uasset
@@ -1163,4 +1250,4 @@ MeinProjekt/
 
 ---
 
-*Alchemy Fox Studio — Grid Inventory Plugin v1.0 — Februar 2026*
+*Alchemy Fox Studio — Grid Inventory Plugin v1.0 — März 2026*

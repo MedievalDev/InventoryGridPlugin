@@ -9,6 +9,7 @@
 class UGridInventoryComponent;
 class UGridInventoryWidget;
 class UInventorySlotWidget;
+class AMerchantActor;
 class UTextBlock;
 class UButton;
 
@@ -97,7 +98,16 @@ public:
 	 * @param MerchantName Display name for the merchant
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Trade Panel")
-	void OpenTrade(UGridInventoryComponent* PlayerInv, UGridInventoryComponent* MerchantInv, FText MerchantName);
+	void OpenTrade(UGridInventoryComponent* PlayerInv, UGridInventoryComponent* MerchantInv, FText InMerchantName);
+
+	/**
+	 * Open trade with a MerchantActor.
+	 * Automatically uses the merchant's inventory, name, and price multipliers.
+	 * @param PlayerInv The player's inventory component
+	 * @param Merchant The merchant actor to trade with
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Trade Panel")
+	void OpenTradeWithMerchant(UGridInventoryComponent* PlayerInv, AMerchantActor* Merchant);
 
 	/** Close the trade panel */
 	UFUNCTION(BlueprintCallable, Category = "Trade Panel")
