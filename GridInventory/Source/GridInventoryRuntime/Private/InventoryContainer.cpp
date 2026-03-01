@@ -32,6 +32,17 @@ void AInventoryContainer::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(AInventoryContainer, bLootGenerated);
 }
 
+void AInventoryContainer::BeginPlay()
+{
+	Super::BeginPlay();
+
+	// Pre-fill with editor-configured default items
+	if (DefaultItems.Num() > 0 && InventoryComponent)
+	{
+		InventoryComponent->TryAddItemsBatch(DefaultItems);
+	}
+}
+
 bool AInventoryContainer::TryOpen(AActor* Interactor)
 {
 	if (!Interactor) return false;

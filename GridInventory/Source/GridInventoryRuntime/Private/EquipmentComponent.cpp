@@ -290,7 +290,39 @@ bool UEquipmentComponent::CanEquipInSlot(FName SlotID, UInventoryItemDefinition*
 	const FEquipmentSlotDefinition* SlotDef = FindSlotDef(SlotID);
 	if (!SlotDef) return false;
 
-	return SlotDef->AcceptsItemType(ItemDef->ItemType);
+	if (!SlotDef->AcceptsItemType(ItemDef->ItemType)) return false;
+
+	return MeetsRequirements(ItemDef);
+}
+
+bool UEquipmentComponent::MeetsRequirements(UInventoryItemDefinition* ItemDef) const
+{
+	if (!ItemDef || ItemDef->EquipRequirements.Num() == 0) return true;
+	if (!OnGetPlayerStat.IsBound()) return true;
+
+	for (const FItemRequirement& Req : ItemDef->EquipRequirements)
+	{
+		const float PlayerValue = OnGetPlayerStat.Execute(Req.RequirementID);
+		if (PlayerValue < Req.MinValue) return false;
+	}
+	return true;
+}
+
+TArray<FItemRequirement> UEquipmentComponent::GetUnmetRequirements(UInventoryItemDefinition* ItemDef) const
+{
+	TArray<FItemRequirement> Unmet;
+	if (!ItemDef || ItemDef->EquipRequirements.Num() == 0) return Unmet;
+	if (!OnGetPlayerStat.IsBound()) return Unmet;
+
+	for (const FItemRequirement& Req : ItemDef->EquipRequirements)
+	{
+		const float PlayerValue = OnGetPlayerStat.Execute(Req.RequirementID);
+		if (PlayerValue < Req.MinValue)
+		{
+			Unmet.Add(Req);
+		}
+	}
+	return Unmet;
 }
 
 FName UEquipmentComponent::FindEmptySlotForItem(UInventoryItemDefinition* ItemDef) const

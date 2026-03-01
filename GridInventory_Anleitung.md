@@ -433,6 +433,34 @@ Keyboard E (Pressed)
 
 > **Tipp:** Loot wird beim ersten Öffnen automatisch generiert (async, kein Frame-Drop). Beim zweiten Öffnen sind die gleichen Items noch da.
 
+## 8.4 Default Items (feste Items ohne Zufall)
+
+Willst du dass eine Truhe **immer** bestimmte Items enthält (kein Zufall)?
+
+1. Truhe im Level auswählen (oder BP_Truhe öffnen)
+2. Im Details-Panel → **Container | Default Items** → **+** klicken
+3. Pro Eintrag:
+
+| Property | Wert | Beschreibung |
+|----------|------|-------------|
+| Item Def | DA_Heiltrank | Welches Item |
+| Count | 3 | Wie viele |
+
+Beispiel:
+
+| # | Item Def | Count |
+|---|----------|-------|
+| 0 | DA_Heiltrank | 3 |
+| 1 | DA_Eisenschwert | 1 |
+| 2 | DA_Schluessel | 1 |
+
+> **Tipp:** DefaultItems und LootTable können kombiniert werden! Die Truhe hat dann immer die festen Items PLUS zufällige Extras aus der LootTable.
+
+**Reihenfolge:**
+1. Bei Spielstart → Default Items werden ins Container-Inventar geladen
+2. Beim ersten Öffnen → LootTable generiert zusätzliche Items
+3. Bei Save/Load → Gespeicherter Zustand wird wiederhergestellt
+
 ---
 
 # 9. Equipment-System
@@ -469,6 +497,71 @@ Rechtsklick auf Item → Equip Item
 ```
 
 Oder per Debug-Command: `Inv.Equip MainHand Eisenschwert`
+
+## 9.4 Item-Voraussetzungen (Requirements)
+
+Items können Voraussetzungen haben — z.B. "Schwert braucht Level 8 und Stärke 10".
+
+### Requirements im Editor setzen
+
+1. Öffne ein ItemDefinition DataAsset (z.B. `DA_Eisenschwert`)
+2. Im Details-Panel → Kategorie **Requirements** → **Equip Requirements** → **+** klicken
+3. Pro Eintrag:
+
+| Requirement ID | Min Value | Bedeutung |
+|---------------|-----------|-----------|
+| Level | 8 | Spieler braucht Level 8 |
+| Staerke | 10 | Spieler braucht 10 Stärke |
+| Geschicklichkeit | 5 | Spieler braucht 5 Geschicklichkeit |
+
+Die Namen sind frei wählbar — du entscheidest welche Attribute dein Spiel hat!
+
+### Blueprint: Deine Variablen verbinden
+
+Das EquipmentComponent fragt dein Blueprint nach den Spieler-Werten. Du musst einmal sagen "so liest man meine Variablen":
+
+```
+Event Begin Play
+  │
+  ├→ Get Equipment Component (Self)
+  │
+  └→ SET On Get Player Stat
+       │
+       └→ Create Event → "GetMeineStat" (Input: StatID, Output: float)
+```
+
+Dann die Funktion `GetMeineStat` implementieren:
+
+```
+Funktion: GetMeineStat (StatID: FName) → Return: float
+
+  Select (StatID)
+  │
+  ├→ "Level"           → Return: MeinLevel        ← Deine Variable
+  ├→ "Staerke"         → Return: MeineStaerke     ← Deine Variable
+  ├→ "Geschicklichkeit" → Return: MeineGeschick    ← Deine Variable
+  └→ Default           → Return: 0
+```
+
+### Ergebnis
+
+- **Requirements erfüllt** → Item kann ausgerüstet werden
+- **Requirements NICHT erfüllt** → `Equip Item` gibt false zurück
+- **Kein Delegate gebunden** → Alle Items können ausgerüstet werden (keine Einschränkung)
+
+### Unerfüllte Requirements anzeigen
+
+Nutze den Node `Get Unmet Requirements` um dem Spieler zu zeigen was fehlt:
+
+```
+Get Unmet Requirements (ItemDef: DA_Eisenschwert)
+  │
+  └→ For Each (FItemRequirement)
+       │
+       ├→ Requirement ID: "Staerke"
+       └→ Min Value: 10
+           → Print: "Du brauchst 10 Stärke!"
+```
 
 ---
 

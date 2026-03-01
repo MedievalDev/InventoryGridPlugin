@@ -6,6 +6,7 @@
 #include "Engine/DataAsset.h"
 #include "ItemEffectValue.h"
 #include "ItemClassMultiplier.h"
+#include "ItemRequirement.h"
 #include "IngredientSpawnData.h"
 #include "InventoryItemDefinition.generated.h"
 
@@ -75,6 +76,21 @@ public:
 	/** Base gold value of this item (used for buying/selling with NPCs) */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Trade", meta = (ClampMin = "0"))
 	int32 BaseValue;
+
+	// ========================
+	// Requirements
+	// ========================
+
+	/**
+	 * Requirements the player must meet to equip or use this item.
+	 * Each entry is a stat name + minimum value.
+	 * The EquipmentComponent checks these via the OnGetPlayerStat delegate.
+	 *
+	 * Examples:
+	 *   "Level" >= 8, "Staerke" >= 10, "Geschicklichkeit" >= 5
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Requirements")
+	TArray<FItemRequirement> EquipRequirements;
 
 	// ========================
 	// Effect Values

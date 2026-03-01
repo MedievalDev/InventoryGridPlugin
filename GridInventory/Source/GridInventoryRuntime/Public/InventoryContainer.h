@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "InventoryGrid.h"
 #include "InventoryContainer.generated.h"
 
 class UGridInventoryComponent;
@@ -110,6 +111,19 @@ public:
 	void RegenerateLoot(int32 OverrideLevel = 0);
 
 	// ========================
+	// Default Items (Editor Pre-Fill)
+	// ========================
+
+	/**
+	 * Items that are always placed in this container at game start.
+	 * Configure in the editor per container instance — select Item + Count.
+	 * These are added BEFORE loot table generation.
+	 * Can be combined with LootTable for fixed + random items.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Container|Default Items")
+	TArray<FItemAddRequest> DefaultItems;
+
+	// ========================
 	// State
 	// ========================
 
@@ -164,6 +178,7 @@ public:
 	bool HasRequiredKey(AActor* Actor) const;
 
 protected:
+	virtual void BeginPlay() override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	UFUNCTION()
