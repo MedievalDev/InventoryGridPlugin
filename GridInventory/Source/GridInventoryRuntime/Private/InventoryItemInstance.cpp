@@ -5,7 +5,6 @@
 
 FInventoryItemInstance::FInventoryItemInstance()
 	: UniqueID()
-	, ItemDef(nullptr)
 	, GridPosition(FIntPoint::ZeroValue)
 	, bIsRotated(false)
 	, StackCount(1)
@@ -14,13 +13,23 @@ FInventoryItemInstance::FInventoryItemInstance()
 {
 }
 
+UInventoryItemDefinition* FInventoryItemInstance::GetItemDef() const
+{
+	if (ItemDefSoft.IsNull())
+	{
+		return nullptr;
+	}
+	return ItemDefSoft.LoadSynchronous();
+}
+
 // ============================================================================
 // Effect Value Resolution
 // ============================================================================
 
 float FInventoryItemInstance::GetEffectValue(FName EffectID) const
 {
-	if (!ItemDef) return 0.0f;
+	UInventoryItemDefinition* Def = GetItemDef();
+	if (!Def) return 0.0f;
 
 	float BaseValue = 0.0f;
 
@@ -33,13 +42,13 @@ float FInventoryItemInstance::GetEffectValue(FName EffectID) const
 	else
 	{
 		// 2. Fall back to item definition base effects
-		BaseValue = ItemDef->GetBaseEffectValue(EffectID);
+		BaseValue = Def->GetBaseEffectValue(EffectID);
 	}
 
 	// 3. Apply class level multiplier
-	if (ItemDef->bCanMergeUpgrade && CurrentClassLevel > 1)
+	if (Def->bCanMergeUpgrade && CurrentClassLevel > 1)
 	{
-		BaseValue *= ItemDef->GetClassMultiplier(CurrentClassLevel);
+		BaseValue *= Def->GetClassMultiplier(CurrentClassLevel);
 	}
 
 	return BaseValue;
@@ -48,13 +57,14 @@ float FInventoryItemInstance::GetEffectValue(FName EffectID) const
 TArray<FItemEffectValue> FInventoryItemInstance::GetAllEffectValues() const
 {
 	TArray<FItemEffectValue> Result;
-	if (!ItemDef) return Result;
+	UInventoryItemDefinition* Def = GetItemDef();
+	if (!Def) return Result;
 
-	const float ClassMult = (ItemDef->bCanMergeUpgrade && CurrentClassLevel > 1)
-		? ItemDef->GetClassMultiplier(CurrentClassLevel) : 1.0f;
+	const float ClassMult = (Def->bCanMergeUpgrade && CurrentClassLevel > 1)
+		? Def->GetClassMultiplier(CurrentClassLevel) : 1.0f;
 
 	// Start with base effects
-	for (const FItemEffectValue& Base : ItemDef->BaseEffects)
+	for (const FItemEffectValue& Base : Def->BaseEffects)
 	{
 		// Check for instance override
 		const FItemEffectValue* Override = ItemEffectHelpers::FindEffect(InstanceEffects, Base.EffectID);
@@ -65,7 +75,7 @@ TArray<FItemEffectValue> FInventoryItemInstance::GetAllEffectValues() const
 	// Add instance-only effects (not in base)
 	for (const FItemEffectValue& Inst : InstanceEffects)
 	{
-		const FItemEffectValue* InBase = ItemEffectHelpers::FindEffect(ItemDef->BaseEffects, Inst.EffectID);
+		const FItemEffectValue* InBase = ItemEffectHelpers::FindEffect(Def->BaseEffects, Inst.EffectID);
 		if (!InBase)
 		{
 			Result.Add(FItemEffectValue(Inst.EffectID, Inst.Value * ClassMult));
@@ -77,19 +87,20 @@ TArray<FItemEffectValue> FInventoryItemInstance::GetAllEffectValues() const
 
 FText FInventoryItemInstance::GetDisplayName() const
 {
-	if (!ItemDef) return FText::GetEmpty();
+	UInventoryItemDefinition* Def = GetItemDef();
+	if (!Def) return FText::GetEmpty();
 
-	if (ItemDef->bCanMergeUpgrade && CurrentClassLevel > 1)
+	if (Def->bCanMergeUpgrade && CurrentClassLevel > 1)
 	{
-		FItemClassMultiplier ClassInfo = ItemDef->GetClassInfo(CurrentClassLevel);
+		FItemClassMultiplier ClassInfo = Def->GetClassInfo(CurrentClassLevel);
 		if (!ClassInfo.ClassSuffix.IsEmpty())
 		{
 			return FText::Format(NSLOCTEXT("GridInv", "ClassedName", "{0} {1}"),
-				ItemDef->DisplayName, ClassInfo.ClassSuffix);
+				Def->DisplayName, ClassInfo.ClassSuffix);
 		}
 	}
 
-	return ItemDef->DisplayName;
+	return Def->DisplayName;
 }
 
 // ============================================================================
@@ -98,14 +109,16 @@ FText FInventoryItemInstance::GetDisplayName() const
 
 FIntPoint FInventoryItemInstance::GetEffectiveSize() const
 {
-	if (!ItemDef) return FIntPoint(1, 1);
-	return ItemDef->GetEffectiveSize(bIsRotated);
+	UInventoryItemDefinition* Def = GetItemDef();
+	if (!Def) return FIntPoint(1, 1);
+	return Def->GetEffectiveSize(bIsRotated);
 }
 
 float FInventoryItemInstance::GetTotalWeight() const
 {
-	if (!ItemDef) return 0.0f;
-	float W = ItemDef->GetStackWeight(StackCount);
+	UInventoryItemDefinition* Def = GetItemDef();
+	if (!Def) return 0.0f;
+	float W = Def->GetStackWeight(StackCount);
 	if (SubInventory && SubInventory->IsInitialized())
 	{
 		W += SubInventory->GetCurrentWeight();
@@ -115,26 +128,31 @@ float FInventoryItemInstance::GetTotalWeight() const
 
 float FInventoryItemInstance::GetOwnWeight() const
 {
-	if (!ItemDef) return 0.0f;
-	return ItemDef->GetStackWeight(StackCount);
+	UInventoryItemDefinition* Def = GetItemDef();
+	if (!Def) return 0.0f;
+	return Def->GetStackWeight(StackCount);
 }
 
 bool FInventoryItemInstance::IsValid() const
 {
-	return UniqueID.IsValid() && ItemDef != nullptr;
+	return UniqueID.IsValid() && !ItemDefSoft.IsNull();
 }
 
 bool FInventoryItemInstance::IsContainer() const
 {
-	return ItemDef != nullptr && ItemDef->bIsContainer;
+	UInventoryItemDefinition* Def = GetItemDef();
+	return Def != nullptr && Def->bIsContainer;
 }
 
 bool FInventoryItemInstance::CanMergeWith(const FInventoryItemInstance& Other) const
 {
 	if (!IsValid() || !Other.IsValid()) return false;
-	if (!ItemDef->bCanMergeUpgrade) return false;
-	if (ItemDef != Other.ItemDef) return false; // Must be same item type
-	if (CurrentClassLevel >= ItemDef->MaxClassLevel) return false; // Already max
+	UInventoryItemDefinition* Def = GetItemDef();
+	UInventoryItemDefinition* OtherDef = Other.GetItemDef();
+	if (!Def || !OtherDef) return false;
+	if (!Def->bCanMergeUpgrade) return false;
+	if (Def != OtherDef) return false; // Must be same item type
+	if (CurrentClassLevel >= Def->MaxClassLevel) return false; // Already max
 	return true;
 }
 
@@ -145,7 +163,7 @@ UItemContainerInventory* FInventoryItemInstance::GetOrCreateSubInventory(UObject
 	if (!SubInventory)
 	{
 		SubInventory = NewObject<UItemContainerInventory>(Outer ? Outer : GetTransientPackage());
-		SubInventory->Initialize(ItemDef);
+		SubInventory->Initialize(GetItemDef());
 	}
 	return SubInventory;
 }
@@ -154,7 +172,7 @@ FInventoryItemInstance FInventoryItemInstance::CreateNew(UInventoryItemDefinitio
 {
 	FInventoryItemInstance Instance;
 	Instance.UniqueID = FGuid::NewGuid();
-	Instance.ItemDef = InItemDef;
+	Instance.ItemDefSoft = InItemDef;
 	Instance.GridPosition = FIntPoint(-1, -1);
 	Instance.bIsRotated = false;
 	Instance.StackCount = FMath::Max(1, InStackCount);

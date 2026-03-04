@@ -5,7 +5,7 @@
 
 void UInventoryDragDropOperation::ToggleRotation()
 {
-	if (DraggedItem.ItemDef && DraggedItem.ItemDef->bCanRotate)
+	if (DraggedItem.GetItemDef() && DraggedItem.GetItemDef()->bCanRotate)
 	{
 		bDragRotated = !bDragRotated;
 		GrabOffset = FIntPoint(GrabOffset.Y, GrabOffset.X);
@@ -14,7 +14,7 @@ void UInventoryDragDropOperation::ToggleRotation()
 
 FIntPoint UInventoryDragDropOperation::GetEffectiveDragSize() const
 {
-	if (!DraggedItem.ItemDef) return FIntPoint(1, 1);
+	if (!DraggedItem.GetItemDef()) return FIntPoint(1, 1);
 	const bool bEffective = DraggedItem.bIsRotated != bDragRotated;
-	return DraggedItem.ItemDef->GetEffectiveSize(bEffective);
+	return DraggedItem.GetItemDef()->GetEffectiveSize(bEffective);
 }

@@ -1,6 +1,7 @@
 // Copyright Marco. All Rights Reserved.
 
 #include "InventoryGrid.h"
+#include "InventoryItemDefinition.h"
 
 FInventoryGrid::FInventoryGrid()
 	: Width(0)
@@ -439,21 +440,22 @@ TArray<FGridPlacementResult> FInventoryGrid::FindSlotsForBatch(const TArray<FIte
 
 	for (const FItemAddRequest& Req : Requests)
 	{
-		if (!Req.ItemDef)
+		UInventoryItemDefinition* Def = Req.ItemDef.LoadSynchronous();
+		if (!Def)
 		{
 			Results.Add(FGridPlacementResult::Failed());
 			continue;
 		}
 
 		FGridPlacementResult Slot = TempGrid.FindFirstFreeSlot(
-			Req.ItemDef->GridSize,
-			Req.ItemDef->bCanRotate
+			Def->GridSize,
+			Def->bCanRotate
 		);
 
 		if (Slot.bSuccess)
 		{
 			// "Place" in temp grid so next items account for this placement
-			const FIntPoint EffSize = Req.ItemDef->GetEffectiveSize(Slot.bRotated);
+			const FIntPoint EffSize = Def->GetEffectiveSize(Slot.bRotated);
 			TempGrid.PlaceItem(FGuid::NewGuid(), Slot.Position, EffSize);
 		}
 

@@ -14,7 +14,7 @@ void UInventoryContextMenuWidget::InitMenu(const FInventoryItemInstance& InItem,
 	ContextItem = InItem;
 	ContextInventory = InInventory;
 
-	if (!WidgetTree || !ContextItem.ItemDef) return;
+	if (!WidgetTree || !ContextItem.GetItemDef()) return;
 
 	// Build the visual tree before AddToViewport
 	UBorder* Background = WidgetTree->ConstructWidget<UBorder>();
@@ -41,14 +41,14 @@ void UInventoryContextMenuWidget::InitMenu(const FInventoryItemInstance& InItem,
 	VBox->AddChild(Sep);
 
 	// Use/Consume (only if consumable)
-	if (ContextItem.ItemDef->bIsConsumable)
+	if (ContextItem.GetItemDef()->bIsConsumable)
 	{
 		UButton* Btn = CreateMenuButton(VBox, FText::FromString(TEXT("Benutzen")));
 		Btn->OnClicked.AddDynamic(this, &UInventoryContextMenuWidget::OnUseClicked);
 	}
 
 	// Rotate (only if rotatable)
-	if (ContextItem.ItemDef->bCanRotate)
+	if (ContextItem.GetItemDef()->bCanRotate)
 	{
 		UButton* Btn = CreateMenuButton(VBox, FText::FromString(TEXT("Drehen")));
 		Btn->OnClicked.AddDynamic(this, &UInventoryContextMenuWidget::OnRotateClicked);
@@ -129,16 +129,16 @@ void UInventoryContextMenuWidget::OnRotateClicked()
 
 void UInventoryContextMenuWidget::OnInfoClicked()
 {
-	if (ContextItem.ItemDef)
+	if (ContextItem.GetItemDef())
 	{
 		FString Info = FString::Printf(
 			TEXT("[%s] %s\nTyp: %s | Gewicht: %.1f | Stack: %d/%d | Klasse: %d"),
 			*ContextItem.UniqueID.ToString().Left(8),
-			*ContextItem.ItemDef->DisplayName.ToString(),
-			*ContextItem.ItemDef->ItemType.ToString(),
+			*ContextItem.GetItemDef()->DisplayName.ToString(),
+			*ContextItem.GetItemDef()->ItemType.ToString(),
 			ContextItem.GetOwnWeight(),
 			ContextItem.StackCount,
-			ContextItem.ItemDef->MaxStackSize,
+			ContextItem.GetItemDef()->MaxStackSize,
 			ContextItem.CurrentClassLevel);
 
 		// Effects

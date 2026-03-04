@@ -449,21 +449,21 @@ void UInventoryDebugSubsystem::Cmd_Consume(const TArray<FString>& Args, UWorld* 
 	if (!UID.IsValid()) { DebugPrintError(FString::Printf(TEXT("Item '%s' not found"), *Args[0])); return; }
 
 	FInventoryItemInstance Item = Inv->GetItemByID(UID);
-	if (!Item.IsValid() || !Item.ItemDef)
+	if (!Item.IsValid() || !Item.GetItemDef())
 	{
 		DebugPrintError(TEXT("Invalid item"));
 		return;
 	}
 
-	if (!Item.ItemDef->bIsConsumable)
+	if (!Item.GetItemDef()->bIsConsumable)
 	{
-		DebugPrintWarning(FString::Printf(TEXT("'%s' is not consumable"), *Item.ItemDef->DisplayName.ToString()));
+		DebugPrintWarning(FString::Printf(TEXT("'%s' is not consumable"), *Item.GetItemDef()->DisplayName.ToString()));
 		return;
 	}
 
 	bool bSuccess = Inv->ConsumeItem(UID);
 	DebugPrint(bSuccess
-		? FString::Printf(TEXT("Consumed %s"), *Item.ItemDef->DisplayName.ToString())
+		? FString::Printf(TEXT("Consumed %s"), *Item.GetItemDef()->DisplayName.ToString())
 		: TEXT("Consume failed"));
 }
 
@@ -604,12 +604,12 @@ void UInventoryDebugSubsystem::Cmd_ListSlots(const TArray<FString>& Args, UWorld
 		FInventoryItemInstance Item = Equip->GetItemInSlot(SlotDef.SlotID);
 		FString Status;
 
-		if (Item.IsValid() && Item.ItemDef)
+		if (Item.IsValid() && Item.GetItemDef())
 		{
 			Status = FString::Printf(TEXT("[%s] %s: %s x%d"),
 				*SlotDef.SlotID.ToString(),
 				*SlotDef.DisplayName.ToString(),
-				*Item.ItemDef->DisplayName.ToString(),
+				*Item.GetItemDef()->DisplayName.ToString(),
 				Item.StackCount);
 		}
 		else
@@ -679,7 +679,7 @@ void UInventoryDebugSubsystem::Cmd_SetClass(const TArray<FString>& Args, UWorld*
 	{
 		if (Item.UniqueID == UID)
 		{
-			int32 MaxLevel = Item.ItemDef ? Item.ItemDef->MaxClassLevel : Level;
+			int32 MaxLevel = Item.GetItemDef() ? Item.GetItemDef()->MaxClassLevel : Level;
 			Item.CurrentClassLevel = FMath::Min(Level, MaxLevel);
 			DebugPrint(FString::Printf(TEXT("Set %s to Class Level %d (max %d)"),
 				*Item.GetDisplayName().ToString(), Item.CurrentClassLevel, MaxLevel));
@@ -776,7 +776,7 @@ void UInventoryDebugSubsystem::Cmd_List(const TArray<FString>& Args, UWorld* Wor
 	for (const FInventoryItemInstance& Item : Items)
 	{
 		FString ShortUID = Item.UniqueID.ToString().Left(8);
-		FString Name = Item.ItemDef ? Item.ItemDef->DisplayName.ToString() : TEXT("???");
+		FString Name = Item.GetItemDef() ? Item.GetItemDef()->DisplayName.ToString() : TEXT("???");
 		FString Rot = Item.bIsRotated ? TEXT(" [R]") : TEXT("");
 		FString Container = Item.IsContainer() ? TEXT(" [C]") : TEXT("");
 		FString ClassStr = (Item.CurrentClassLevel > 1) ?
@@ -807,11 +807,11 @@ void UInventoryDebugSubsystem::Cmd_ListByType(const TArray<FString>& Args, UWorl
 
 	for (const FInventoryItemInstance& Item : Inv->GetAllItems())
 	{
-		if (Item.ItemDef && Item.ItemDef->ItemType == TypeFilter)
+		if (Item.GetItemDef() && Item.GetItemDef()->ItemType == TypeFilter)
 		{
 			FString ShortUID = Item.UniqueID.ToString().Left(8);
 			DebugPrint(FString::Printf(TEXT("  [%s] %s x%d @ (%d,%d)"),
-				*ShortUID, *Item.ItemDef->DisplayName.ToString(),
+				*ShortUID, *Item.GetItemDef()->DisplayName.ToString(),
 				Item.StackCount, Item.GridPosition.X, Item.GridPosition.Y));
 			Found++;
 		}
@@ -838,9 +838,9 @@ void UInventoryDebugSubsystem::Cmd_Find(const TArray<FString>& Args, UWorld* Wor
 
 	for (const FInventoryItemInstance& Item : Inv->GetAllItems())
 	{
-		if (Item.ItemDef)
+		if (Item.GetItemDef())
 		{
-			FString Name = Item.ItemDef->DisplayName.ToString();
+			FString Name = Item.GetItemDef()->DisplayName.ToString();
 			if (Name.ToLower().Contains(Search))
 			{
 				FString ShortUID = Item.UniqueID.ToString().Left(8);
@@ -859,12 +859,12 @@ void UInventoryDebugSubsystem::Cmd_Find(const TArray<FString>& Args, UWorld* Wor
 		{
 			for (const FInventoryItemInstance& SubItem : ContainerItem.SubInventory->GetAllItems())
 			{
-				if (SubItem.ItemDef && SubItem.ItemDef->DisplayName.ToString().ToLower().Contains(Search))
+				if (SubItem.GetItemDef() && SubItem.GetItemDef()->DisplayName.ToString().ToLower().Contains(Search))
 				{
 					FString ShortUID = SubItem.UniqueID.ToString().Left(8);
-					FString ContainerName = ContainerItem.ItemDef ? ContainerItem.ItemDef->DisplayName.ToString() : TEXT("???");
+					FString ContainerName = ContainerItem.GetItemDef() ? ContainerItem.GetItemDef()->DisplayName.ToString() : TEXT("???");
 					DebugPrint(FString::Printf(TEXT("  [%s] %s x%d (in %s)"),
-						*ShortUID, *SubItem.ItemDef->DisplayName.ToString(),
+						*ShortUID, *SubItem.GetItemDef()->DisplayName.ToString(),
 						SubItem.StackCount, *ContainerName));
 					Found++;
 				}
@@ -890,9 +890,9 @@ void UInventoryDebugSubsystem::Cmd_Info(const TArray<FString>& Args, UWorld* Wor
 	if (!UID.IsValid()) { DebugPrintError(TEXT("Item not found")); return; }
 
 	FInventoryItemInstance Item = Inv->GetItemByID(UID);
-	if (!Item.IsValid() || !Item.ItemDef) { DebugPrintError(TEXT("Invalid item")); return; }
+	if (!Item.IsValid() || !Item.GetItemDef()) { DebugPrintError(TEXT("Invalid item")); return; }
 
-	UInventoryItemDefinition* Def = Item.ItemDef;
+	UInventoryItemDefinition* Def = Item.GetItemDef();
 
 	DebugPrint(TEXT("=== Item Info ==="), FColor::Cyan);
 	DebugPrint(FString::Printf(TEXT("  UID:        %s"), *Item.UniqueID.ToString()));
@@ -1174,8 +1174,8 @@ void UInventoryDebugSubsystem::Cmd_DebugMemory(const TArray<FString>& Args, UWor
 	for (const FInventoryItemInstance& Item : Inv->GetAllItems())
 	{
 		TotalItems++;
-		if (!Item.ItemDef) continue;
-		UniqueDefs.Add(Item.ItemDef);
+		if (!Item.GetItemDef()) continue;
+		UniqueDefs.Add(Item.GetItemDef());
 	}
 
 	for (UInventoryItemDefinition* Def : UniqueDefs)

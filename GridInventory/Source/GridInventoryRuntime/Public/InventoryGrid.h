@@ -69,12 +69,12 @@ struct GRIDINVENTORYRUNTIME_API FItemAddRequest
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid")
-	UInventoryItemDefinition* ItemDef;
+	TSoftObjectPtr<UInventoryItemDefinition> ItemDef;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid")
 	int32 Count;
 
-	FItemAddRequest() : ItemDef(nullptr), Count(1) {}
+	FItemAddRequest() : Count(1) {}
 	FItemAddRequest(UInventoryItemDefinition* InDef, int32 InCount) : ItemDef(InDef), Count(InCount) {}
 };
 

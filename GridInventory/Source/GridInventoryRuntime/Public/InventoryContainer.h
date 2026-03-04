@@ -65,7 +65,7 @@ public:
 
 	/** Loot table for random item generation on first open */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Container|Loot")
-	ULootTable* LootTable;
+	TSoftObjectPtr<ULootTable> LootTable;
 
 	/**
 	 * Weight multiplier for loot generation.

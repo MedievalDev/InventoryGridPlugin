@@ -80,7 +80,7 @@ void UInventorySlotWidget::NativeOnDragEnter(const FGeometry& InGeometry, const 
 
 	const FIntPoint DropPos = FIntPoint(SlotX, SlotY) - DragOp->GrabOffset;
 	const bool bEffRot = DragOp->DraggedItem.bIsRotated != DragOp->bDragRotated;
-	const bool bCanPlace = OwningInventory->CanPlaceAt(DragOp->DraggedItem.ItemDef, DropPos, bEffRot);
+	const bool bCanPlace = OwningInventory->CanPlaceAt(DragOp->DraggedItem.GetItemDef(), DropPos, bEffRot);
 	SetHighlight(true, bCanPlace);
 }
 

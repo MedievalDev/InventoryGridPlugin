@@ -147,7 +147,7 @@ void UEquipmentSlotWidget::NativeOnDragEnter(const FGeometry& InGeometry, const 
 	UInventoryDragDropOperation* DragOp = Cast<UInventoryDragDropOperation>(InOperation);
 	if (!DragOp || !EquipmentComponent) return;
 
-	const bool bCanEquip = EquipmentComponent->CanEquipInSlot(SlotID, DragOp->DraggedItem.ItemDef);
+	const bool bCanEquip = EquipmentComponent->CanEquipInSlot(SlotID, DragOp->DraggedItem.GetItemDef());
 	OnDragHighlight(bCanEquip);
 }
 
@@ -165,7 +165,7 @@ bool UEquipmentSlotWidget::NativeOnDrop(const FGeometry& InGeometry, const FDrag
 	if (!DragOp || !EquipmentComponent) return false;
 
 	// Check if item is compatible
-	if (!EquipmentComponent->CanEquipInSlot(SlotID, DragOp->DraggedItem.ItemDef))
+	if (!EquipmentComponent->CanEquipInSlot(SlotID, DragOp->DraggedItem.GetItemDef()))
 	{
 		return false;
 	}
@@ -183,7 +183,7 @@ bool UEquipmentSlotWidget::NativeOnDrop(const FGeometry& InGeometry, const FDrag
 	}
 
 	// Direct equip (no source inventory)
-	return EquipmentComponent->EquipItem(SlotID, DragOp->DraggedItem.ItemDef, DragOp->DraggedItem.StackCount);
+	return EquipmentComponent->EquipItem(SlotID, DragOp->DraggedItem.GetItemDef(), DragOp->DraggedItem.StackCount);
 }
 
 // ============================================================================

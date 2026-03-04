@@ -2,6 +2,7 @@
 
 #include "MerchantActor.h"
 #include "GridInventoryComponent.h"
+#include "InventoryItemDefinition.h"
 
 AMerchantActor::AMerchantActor()
 {
@@ -64,7 +65,7 @@ void AMerchantActor::GenerateRandomStock()
 		for (int32 i = 0; i < RandomStock.Num(); ++i)
 		{
 			const FRandomItemEntry& Entry = RandomStock[i];
-			if (!Entry.ItemDef || Entry.SpawnChance <= 0.0f) continue;
+			if (Entry.ItemDef.IsNull() || Entry.SpawnChance <= 0.0f) continue;
 
 			ValidIndices.Add(i);
 			Weights.Add(Entry.SpawnChance);
@@ -90,7 +91,11 @@ void AMerchantActor::GenerateRandomStock()
 
 			const FRandomItemEntry& Chosen = RandomStock[ValidIndices[ChosenPoolIdx]];
 			const int32 Count = FMath::RandRange(Chosen.MinCount, FMath::Max(Chosen.MinCount, Chosen.MaxCount));
-			MerchantInventory->TryAddItem(Chosen.ItemDef, Count);
+			UInventoryItemDefinition* LoadedDef = Chosen.ItemDef.LoadSynchronous();
+			if (LoadedDef)
+			{
+				MerchantInventory->TryAddItem(LoadedDef, Count);
+			}
 
 			TotalWeight -= Weights[ChosenPoolIdx];
 			ValidIndices.RemoveAtSwap(ChosenPoolIdx);
@@ -102,12 +107,16 @@ void AMerchantActor::GenerateRandomStock()
 		// === Individual roll mode ===
 		for (const FRandomItemEntry& Entry : RandomStock)
 		{
-			if (!Entry.ItemDef || Entry.SpawnChance <= 0.0f) continue;
+			if (Entry.ItemDef.IsNull() || Entry.SpawnChance <= 0.0f) continue;
 
 			if (FMath::FRand() <= Entry.SpawnChance)
 			{
 				const int32 Count = FMath::RandRange(Entry.MinCount, FMath::Max(Entry.MinCount, Entry.MaxCount));
-				MerchantInventory->TryAddItem(Entry.ItemDef, Count);
+				UInventoryItemDefinition* LoadedDef = Entry.ItemDef.LoadSynchronous();
+				if (LoadedDef)
+				{
+					MerchantInventory->TryAddItem(LoadedDef, Count);
+				}
 			}
 		}
 	}

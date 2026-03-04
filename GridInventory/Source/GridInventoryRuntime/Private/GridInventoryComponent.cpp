@@ -151,33 +151,34 @@ int32 UGridInventoryComponent::TryAddItemsBatch(const TArray<FItemAddRequest>& R
 
 	for (const FItemAddRequest& Req : Requests)
 	{
-		if (!Req.ItemDef || Req.Count <= 0) continue;
+		UInventoryItemDefinition* Def = Req.ItemDef.LoadSynchronous();
+		if (!Def || Req.Count <= 0) continue;
 
 		// Currency items bypass the grid — add gold directly
-		if (Req.ItemDef->bIsCurrency)
+		if (Def->bIsCurrency)
 		{
-			const float GoldToAdd = static_cast<float>(Req.ItemDef->BaseValue) * Req.Count;
+			const float GoldToAdd = static_cast<float>(Def->BaseValue) * Req.Count;
 			AddGold(GoldToAdd);
-			OnCurrencyCollected.Broadcast(Req.ItemDef, Req.Count, GoldToAdd);
+			OnCurrencyCollected.Broadcast(Def, Req.Count, GoldToAdd);
 			AddedCount++;
 			continue;
 		}
 
 		int32 Remaining = Req.Count;
 
-		if (Req.ItemDef->bCanStack)
+		if (Def->bCanStack)
 		{
-			Remaining = TryStackOntoExisting(Req.ItemDef, Remaining);
+			Remaining = TryStackOntoExisting(Def, Remaining);
 		}
 
 		if (Remaining > 0)
 		{
 			while (Remaining > 0)
 			{
-				const int32 Chunk = Req.ItemDef->bCanStack
-					? FMath::Min(Remaining, Req.ItemDef->MaxStackSize) : 1;
+				const int32 Chunk = Def->bCanStack
+					? FMath::Min(Remaining, Def->MaxStackSize) : 1;
 
-				NeedPlacement.Add(FItemAddRequest(Req.ItemDef, Chunk));
+				NeedPlacement.Add(FItemAddRequest(Def, Chunk));
 				Remaining -= Chunk;
 			}
 		}
@@ -197,9 +198,10 @@ int32 UGridInventoryComponent::TryAddItemsBatch(const TArray<FItemAddRequest>& R
 			if (Slots[i].bSuccess)
 			{
 				const FItemAddRequest& Req = NeedPlacement[i];
-				if (!CanAffordWeight(Req.ItemDef->Weight * Req.Count)) continue;
+				UInventoryItemDefinition* PlaceDef = Req.ItemDef.LoadSynchronous();
+				if (!PlaceDef || !CanAffordWeight(PlaceDef->Weight * Req.Count)) continue;
 
-				if (Internal_AddItemAt(Req.ItemDef, Slots[i].Position, Slots[i].bRotated, Req.Count))
+				if (Internal_AddItemAt(PlaceDef, Slots[i].Position, Slots[i].bRotated, Req.Count))
 				{
 					AddedCount++;
 				}
@@ -242,7 +244,7 @@ int32 UGridInventoryComponent::RemoveItemByDef(UInventoryItemDefinition* ItemDef
 	int32 i = 0;
 	while (i < Items.Num() && Remaining > 0)
 	{
-		if (Items[i].ItemDef == ItemDef)
+		if (Items[i].GetItemDef() == ItemDef)
 		{
 			const int32 ToRemove = FMath::Min(Remaining, Items[i].StackCount);
 			Items[i].StackCount -= ToRemove;
@@ -284,9 +286,10 @@ bool UGridInventoryComponent::MoveItem(FGuid UniqueID, FIntPoint NewPosition, bo
 	if (Index == INDEX_NONE) return false;
 
 	FInventoryItemInstance& Item = Items[Index];
-	if (bRotated && (!Item.ItemDef || !Item.ItemDef->bCanRotate)) bRotated = false;
+	UInventoryItemDefinition* Def = Item.GetItemDef();
+	if (bRotated && (!Def || !Def->bCanRotate)) bRotated = false;
 
-	const FIntPoint EffSize = Item.ItemDef->GetEffectiveSize(bRotated);
+	const FIntPoint EffSize = Def->GetEffectiveSize(bRotated);
 	if (!Grid.CanPlaceAtIgnoring(NewPosition, EffSize, UniqueID)) return false;
 
 	// O(item_area) remove instead of O(4800)
@@ -314,16 +317,17 @@ bool UGridInventoryComponent::RotateItem(FGuid UniqueID)
 	if (Index == INDEX_NONE) return false;
 
 	FInventoryItemInstance& Item = Items[Index];
-	if (!Item.ItemDef || !Item.ItemDef->bCanRotate) return false;
+	UInventoryItemDefinition* Def = Item.GetItemDef();
+	if (!Def || !Def->bCanRotate) return false;
 
-	if (Item.ItemDef->GridSize.X == Item.ItemDef->GridSize.Y)
+	if (Def->GridSize.X == Def->GridSize.Y)
 	{
 		Item.bIsRotated = !Item.bIsRotated;
 		return true;
 	}
 
 	const bool bNewRotated = !Item.bIsRotated;
-	const FIntPoint NewSize = Item.ItemDef->GetEffectiveSize(bNewRotated);
+	const FIntPoint NewSize = Def->GetEffectiveSize(bNewRotated);
 
 	if (Grid.CanPlaceAtIgnoring(Item.GridPosition, NewSize, UniqueID))
 	{
@@ -345,16 +349,17 @@ bool UGridInventoryComponent::SplitStack(FGuid SourceID, int32 Count, FIntPoint 
 	if (Index == INDEX_NONE) return false;
 
 	FInventoryItemInstance& SourceItem = Items[Index];
-	if (!SourceItem.ItemDef || !SourceItem.ItemDef->bCanStack) return false;
+	UInventoryItemDefinition* Def = SourceItem.GetItemDef();
+	if (!Def || !Def->bCanStack) return false;
 	if (Count >= SourceItem.StackCount) return false; // Use MoveItem for full stack
 
-	const FIntPoint EffSize = SourceItem.ItemDef->GetEffectiveSize(bRotated);
+	const FIntPoint EffSize = Def->GetEffectiveSize(bRotated);
 	if (!Grid.CanPlaceAt(NewPosition, EffSize)) return false;
 
 	// Create new item instance with split count
 	FInventoryItemInstance NewItem;
 	NewItem.UniqueID = FGuid::NewGuid();
-	NewItem.ItemDef = SourceItem.ItemDef;
+	NewItem.ItemDefSoft = SourceItem.ItemDefSoft;
 	NewItem.GridPosition = NewPosition;
 	NewItem.bIsRotated = bRotated;
 	NewItem.StackCount = Count;
@@ -390,7 +395,8 @@ bool UGridInventoryComponent::TransferItem(FGuid UniqueID, UGridInventoryCompone
 	const FInventoryItemInstance& Item = Items[Index];
 	const int32 TransferCount = (Count <= 0) ? Item.StackCount : FMath::Min(Count, Item.StackCount);
 
-	if (TargetInventory->TryAddItem(Item.ItemDef, TransferCount))
+	UInventoryItemDefinition* Def = Item.GetItemDef();
+	if (Def && TargetInventory->TryAddItem(Def, TransferCount))
 	{
 		Internal_RemoveItem(UniqueID, TransferCount);
 		RecalculateWeight();
@@ -410,7 +416,8 @@ bool UGridInventoryComponent::TransferItemTo(FGuid UniqueID, UGridInventoryCompo
 	const FInventoryItemInstance& Item = Items[Index];
 	const int32 TransferCount = (Count <= 0) ? Item.StackCount : FMath::Min(Count, Item.StackCount);
 
-	if (TargetInventory->TryAddItemAt(Item.ItemDef, TargetPosition, bRotated, TransferCount))
+	UInventoryItemDefinition* Def = Item.GetItemDef();
+	if (Def && TargetInventory->TryAddItemAt(Def, TargetPosition, bRotated, TransferCount))
 	{
 		Internal_RemoveItem(UniqueID, TransferCount);
 		RecalculateWeight();
@@ -438,12 +445,13 @@ bool UGridInventoryComponent::ConsumeItem(FGuid UniqueID)
 	if (Index == INDEX_NONE) return false;
 
 	FInventoryItemInstance& Item = Items[Index];
-	if (!Item.ItemDef || !Item.ItemDef->bIsConsumable) return false;
+	UInventoryItemDefinition* Def = Item.GetItemDef();
+	if (!Def || !Def->bIsConsumable) return false;
 
 	FInventoryItemInstance ConsumedItemCopy = Item;
 	OnItemConsumed.Broadcast(ConsumedItemCopy);
 
-	if (Item.ItemDef->bDestroyOnConsume)
+	if (Def->bDestroyOnConsume)
 	{
 		Item.StackCount -= 1;
 		if (Item.StackCount <= 0)
@@ -496,15 +504,16 @@ AActor* UGridInventoryComponent::DropItem(FGuid UniqueID, FVector SpawnLocation,
 	if (Index == INDEX_NONE) return nullptr;
 
 	FInventoryItemInstance& Item = Items[Index];
-	if (!Item.ItemDef) return nullptr;
+	UInventoryItemDefinition* Def = Item.GetItemDef();
+	if (!Def) return nullptr;
 
 	const int32 DropCount = (Count <= 0) ? Item.StackCount : FMath::Min(Count, Item.StackCount);
 
 	// Spawn world actor (load soft class ref)
 	AActor* SpawnedActor = nullptr;
-	if (!Item.ItemDef->WorldActorClass.IsNull())
+	if (!Def->WorldActorClass.IsNull())
 	{
-		UClass* LoadedClass = Item.ItemDef->WorldActorClass.LoadSynchronous();
+		UClass* LoadedClass = Def->WorldActorClass.LoadSynchronous();
 		UWorld* World = GetWorld();
 		if (LoadedClass && World)
 		{
@@ -533,14 +542,15 @@ void UGridInventoryComponent::DropItemAsync(FGuid UniqueID, FVector SpawnLocatio
 	if (Index == INDEX_NONE) return;
 
 	FInventoryItemInstance& Item = Items[Index];
-	if (!Item.ItemDef) return;
+	UInventoryItemDefinition* Def = Item.GetItemDef();
+	if (!Def) return;
 
 	const int32 DropCount = (Count <= 0) ? Item.StackCount : FMath::Min(Count, Item.StackCount);
 
 	// Capture data before removing from inventory
 	FInventoryItemInstance DroppedCopy = Item;
 	DroppedCopy.StackCount = DropCount;
-	TSoftClassPtr<AActor> WorldActorClass = Item.ItemDef->WorldActorClass;
+	TSoftClassPtr<AActor> WorldActorClass = Def->WorldActorClass;
 
 	// Remove from inventory immediately (no hitch)
 	Internal_RemoveItem(UniqueID, DropCount);
@@ -661,12 +671,14 @@ int32 UGridInventoryComponent::StackOnto(FGuid SourceID, FGuid TargetID, int32 C
 	FInventoryItemInstance& Src = Items[SrcIdx];
 	FInventoryItemInstance& Tgt = Items[TgtIdx];
 
-	if (!Src.ItemDef || Src.ItemDef != Tgt.ItemDef) return 0;
-	if (!Src.ItemDef->bCanStack) return 0;
-	if (Tgt.StackCount >= Src.ItemDef->MaxStackSize) return 0;
+	UInventoryItemDefinition* SrcDef = Src.GetItemDef();
+	UInventoryItemDefinition* TgtDef = Tgt.GetItemDef();
+	if (!SrcDef || SrcDef != TgtDef) return 0;
+	if (!SrcDef->bCanStack) return 0;
+	if (Tgt.StackCount >= SrcDef->MaxStackSize) return 0;
 
 	const int32 Available = (Count <= 0) ? Src.StackCount : FMath::Min(Count, Src.StackCount);
-	const int32 CanFit = Src.ItemDef->MaxStackSize - Tgt.StackCount;
+	const int32 CanFit = SrcDef->MaxStackSize - Tgt.StackCount;
 	const int32 ToMove = FMath::Min(Available, CanFit);
 	if (ToMove <= 0) return 0;
 
@@ -702,12 +714,14 @@ int32 UGridInventoryComponent::StackOntoFrom(FGuid TargetID, UGridInventoryCompo
 	FInventoryItemInstance SrcItem = SourceInventory->GetItemByID(SourceID);
 	if (!SrcItem.IsValid()) return 0;
 
-	if (!Tgt.ItemDef || Tgt.ItemDef != SrcItem.ItemDef) return 0;
-	if (!Tgt.ItemDef->bCanStack) return 0;
-	if (Tgt.StackCount >= Tgt.ItemDef->MaxStackSize) return 0;
+	UInventoryItemDefinition* TgtDef = Tgt.GetItemDef();
+	UInventoryItemDefinition* SrcDef = SrcItem.GetItemDef();
+	if (!TgtDef || TgtDef != SrcDef) return 0;
+	if (!TgtDef->bCanStack) return 0;
+	if (Tgt.StackCount >= TgtDef->MaxStackSize) return 0;
 
 	const int32 Available = (Count <= 0) ? SrcItem.StackCount : FMath::Min(Count, SrcItem.StackCount);
-	const int32 CanFit = Tgt.ItemDef->MaxStackSize - Tgt.StackCount;
+	const int32 CanFit = TgtDef->MaxStackSize - Tgt.StackCount;
 	const int32 ToMove = FMath::Min(Available, CanFit);
 	if (ToMove <= 0) return 0;
 
@@ -751,7 +765,7 @@ bool UGridInventoryComponent::HasSpaceFor(UInventoryItemDefinition* ItemDef, int
 	{
 		for (const FInventoryItemInstance& Item : Items)
 		{
-			if (Item.ItemDef == ItemDef && Item.StackCount < ItemDef->MaxStackSize)
+			if (Item.GetItemDef() == ItemDef && Item.StackCount < ItemDef->MaxStackSize)
 			{
 				Remaining -= (ItemDef->MaxStackSize - Item.StackCount);
 				if (Remaining <= 0) return true;
@@ -768,7 +782,7 @@ int32 UGridInventoryComponent::GetItemCount(UInventoryItemDefinition* ItemDef) c
 	int32 Total = 0;
 	for (const FInventoryItemInstance& Item : Items)
 	{
-		if (Item.ItemDef == ItemDef) Total += Item.StackCount;
+		if (Item.GetItemDef() == ItemDef) Total += Item.StackCount;
 	}
 	return Total;
 }
@@ -862,12 +876,14 @@ void UGridInventoryComponent::SortInventory()
 
 	for (FInventoryItemInstance& Item : ItemsCopy)
 	{
-		FGridPlacementResult Slot = Grid.FindFirstFreeSlot(Item.ItemDef->GridSize, Item.ItemDef->bCanRotate);
+		UInventoryItemDefinition* Def = Item.GetItemDef();
+		if (!Def) continue;
+		FGridPlacementResult Slot = Grid.FindFirstFreeSlot(Def->GridSize, Def->bCanRotate);
 		if (Slot.bSuccess)
 		{
 			Item.GridPosition = Slot.Position;
 			Item.bIsRotated = Slot.bRotated;
-			Grid.PlaceItem(Item.UniqueID, Slot.Position, Item.ItemDef->GetEffectiveSize(Slot.bRotated));
+			Grid.PlaceItem(Item.UniqueID, Slot.Position, Def->GetEffectiveSize(Slot.bRotated));
 			ItemIndexMap.Add(Item.UniqueID, Items.Num());
 			Items.Add(Item);
 		}
@@ -912,7 +928,7 @@ bool UGridInventoryComponent::ResizeGrid(int32 NewWidth, int32 NewHeight)
 		if (Item.GridPosition.X + EffSize.X > NewWidth || Item.GridPosition.Y + EffSize.Y > NewHeight)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("[GridInventory] ResizeGrid: Item '%s' at (%d,%d) size (%d,%d) would not fit in %dx%d"),
-				*Item.ItemDef->DisplayName.ToString(),
+				Item.GetItemDef() ? *Item.GetItemDef()->DisplayName.ToString() : TEXT("???"),
 				Item.GridPosition.X, Item.GridPosition.Y,
 				EffSize.X, EffSize.Y, NewWidth, NewHeight);
 			return false;
@@ -1011,9 +1027,10 @@ FItemSaveEntry UGridInventoryComponent::CreateSaveEntry(const FInventoryItemInst
 {
 	FItemSaveEntry Entry;
 
-	if (Item.ItemDef)
+	UInventoryItemDefinition* Def = Item.GetItemDef();
+	if (Def)
 	{
-		URuntimeItemDefinition* RuntimeDef = Cast<URuntimeItemDefinition>(Item.ItemDef);
+		URuntimeItemDefinition* RuntimeDef = Cast<URuntimeItemDefinition>(Def);
 		if (RuntimeDef)
 		{
 			Entry.bIsRuntimeCreated = true;
@@ -1021,7 +1038,7 @@ FItemSaveEntry UGridInventoryComponent::CreateSaveEntry(const FInventoryItemInst
 		}
 		else
 		{
-			Entry.ItemDefPath = FSoftObjectPath(Item.ItemDef);
+			Entry.ItemDefPath = Item.ItemDefSoft.ToSoftObjectPath();
 			Entry.bIsRuntimeCreated = false;
 		}
 	}
@@ -1064,7 +1081,7 @@ bool UGridInventoryComponent::RestoreItemFromEntry(const FItemSaveEntry& Entry)
 
 	FInventoryItemInstance NewItem;
 	NewItem.UniqueID = Entry.UniqueID;
-	NewItem.ItemDef = ItemDef;
+	NewItem.ItemDefSoft = ItemDef;
 	NewItem.GridPosition = Entry.GridPosition;
 	NewItem.bIsRotated = Entry.bIsRotated;
 	NewItem.StackCount = Entry.StackCount;
@@ -1194,7 +1211,8 @@ bool UGridInventoryComponent::ProcessLoadedSaveGame(UInventorySaveGame* SaveGame
 		if (ParentIdx == INDEX_NONE) continue;
 
 		FInventoryItemInstance& ParentItem = Items[ParentIdx];
-		if (!ParentItem.ItemDef || !ParentItem.ItemDef->bIsContainer) continue;
+		UInventoryItemDefinition* ParentDef = ParentItem.GetItemDef();
+		if (!ParentDef || !ParentDef->bIsContainer) continue;
 
 		UItemContainerInventory* SubInv = ParentItem.GetOrCreateSubInventory(this);
 		if (!SubInv) continue;
@@ -1236,7 +1254,7 @@ bool UGridInventoryComponent::ProcessLoadedSaveGame(UInventorySaveGame* SaveGame
 				{
 					FInventoryItemInstance EquipItem;
 					EquipItem.UniqueID = Entry.UniqueID;
-					EquipItem.ItemDef = ItemDef;
+					EquipItem.ItemDefSoft = ItemDef;
 					EquipItem.StackCount = Entry.StackCount;
 					EquipItem.CurrentClassLevel = Entry.CurrentClassLevel;
 					EquipItem.InstanceEffects = Entry.InstanceEffects;
@@ -1437,7 +1455,7 @@ int32 UGridInventoryComponent::TryStackOntoExisting(UInventoryItemDefinition* It
 	for (FInventoryItemInstance& Item : Items)
 	{
 		if (Remaining <= 0) break;
-		if (Item.ItemDef == ItemDef && Item.StackCount < ItemDef->MaxStackSize)
+		if (Item.GetItemDef() == ItemDef && Item.StackCount < ItemDef->MaxStackSize)
 		{
 			const int32 ToAdd = FMath::Min(Remaining, ItemDef->MaxStackSize - Item.StackCount);
 			Item.StackCount += ToAdd;
@@ -1574,9 +1592,10 @@ float UGridInventoryComponent::GetItemSellPrice(FGuid UniqueID, float PriceMulti
 	if (Index == INDEX_NONE) return 0.0f;
 
 	const FInventoryItemInstance& Item = Items[Index];
-	if (!Item.ItemDef) return 0.0f;
+	UInventoryItemDefinition* Def = Item.GetItemDef();
+	if (!Def) return 0.0f;
 
-	return static_cast<float>(Item.ItemDef->BaseValue) * Item.StackCount * PriceMultiplier;
+	return static_cast<float>(Def->BaseValue) * Item.StackCount * PriceMultiplier;
 }
 
 float UGridInventoryComponent::GetInventoryTotalValue() const
@@ -1584,9 +1603,10 @@ float UGridInventoryComponent::GetInventoryTotalValue() const
 	float Total = 0.0f;
 	for (const FInventoryItemInstance& Item : Items)
 	{
-		if (Item.ItemDef)
+		UInventoryItemDefinition* Def = Item.GetItemDef();
+		if (Def)
 		{
-			Total += static_cast<float>(Item.ItemDef->BaseValue) * Item.StackCount;
+			Total += static_cast<float>(Def->BaseValue) * Item.StackCount;
 		}
 	}
 	return Total;

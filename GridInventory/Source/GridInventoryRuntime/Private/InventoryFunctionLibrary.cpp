@@ -15,7 +15,7 @@ TArray<FInventoryItemInstance> UInventoryFunctionLibrary::FindItemsByType(UGridI
 
 	for (const FInventoryItemInstance& Item : Inventory->GetAllItems())
 	{
-		if (Item.ItemDef && Item.ItemDef->ItemType == ItemType)
+		if (Item.GetItemDef() && Item.GetItemDef()->ItemType == ItemType)
 		{
 			Result.Add(Item);
 		}
@@ -30,7 +30,7 @@ TArray<FInventoryItemInstance> UInventoryFunctionLibrary::FindItemsByDef(UGridIn
 
 	for (const FInventoryItemInstance& Item : Inventory->GetAllItems())
 	{
-		if (Item.ItemDef == ItemDef)
+		if (Item.GetItemDef() == ItemDef)
 		{
 			Result.Add(Item);
 		}
@@ -47,9 +47,9 @@ TArray<FInventoryItemInstance> UInventoryFunctionLibrary::FindItemsByName(UGridI
 
 	for (const FInventoryItemInstance& Item : Inventory->GetAllItems())
 	{
-		if (Item.ItemDef)
+		if (Item.GetItemDef())
 		{
-			const FString DisplayName = Item.ItemDef->DisplayName.ToString().ToLower();
+			const FString DisplayName = Item.GetItemDef()->DisplayName.ToString().ToLower();
 			if (DisplayName.Contains(LowerSearch))
 			{
 				Result.Add(Item);
@@ -66,7 +66,7 @@ TArray<FInventoryItemInstance> UInventoryFunctionLibrary::FindStackableItems(UGr
 
 	for (const FInventoryItemInstance& Item : Inventory->GetAllItems())
 	{
-		if (Item.ItemDef && Item.ItemDef->bCanStack)
+		if (Item.GetItemDef() && Item.GetItemDef()->bCanStack)
 		{
 			Result.Add(Item);
 		}
@@ -81,7 +81,7 @@ TArray<FInventoryItemInstance> UInventoryFunctionLibrary::FindPartialStacks(UGri
 
 	for (const FInventoryItemInstance& Item : Inventory->GetAllItems())
 	{
-		if (Item.ItemDef && Item.ItemDef->bCanStack && Item.StackCount < Item.ItemDef->MaxStackSize)
+		if (Item.GetItemDef() && Item.GetItemDef()->bCanStack && Item.StackCount < Item.GetItemDef()->MaxStackSize)
 		{
 			Result.Add(Item);
 		}
@@ -97,7 +97,7 @@ TArray<FInventoryItemInstance> UInventoryFunctionLibrary::FindEquippableItems(
 
 	for (const FInventoryItemInstance& Item : Inventory->GetAllItems())
 	{
-		if (Item.ItemDef && EquipmentComp->CanEquipInSlot(SlotID, Item.ItemDef))
+		if (Item.GetItemDef() && EquipmentComp->CanEquipInSlot(SlotID, Item.GetItemDef()))
 		{
 			Result.Add(Item);
 		}
@@ -185,7 +185,7 @@ TArray<FInventoryItemInstance> UInventoryFunctionLibrary::FindRotatableItems(UGr
 
 	for (const FInventoryItemInstance& Item : Inventory->GetAllItems())
 	{
-		if (Item.ItemDef && Item.ItemDef->bCanRotate && Item.ItemDef->GridSize.X != Item.ItemDef->GridSize.Y)
+		if (Item.GetItemDef() && Item.GetItemDef()->bCanRotate && Item.GetItemDef()->GridSize.X != Item.GetItemDef()->GridSize.Y)
 		{
 			Result.Add(Item);
 		}
@@ -200,9 +200,9 @@ TArray<FInventoryItemInstance> UInventoryFunctionLibrary::FindItemsLargerThan(UG
 
 	for (const FInventoryItemInstance& Item : Inventory->GetAllItems())
 	{
-		if (Item.ItemDef)
+		if (Item.GetItemDef())
 		{
-			const int32 Area = Item.ItemDef->GridSize.X * Item.ItemDef->GridSize.Y;
+			const int32 Area = Item.GetItemDef()->GridSize.X * Item.GetItemDef()->GridSize.Y;
 			if (Area >= MinCellArea)
 			{
 				Result.Add(Item);
@@ -228,9 +228,9 @@ int32 UInventoryFunctionLibrary::GetUniqueItemTypeCount(UGridInventoryComponent*
 	TSet<UInventoryItemDefinition*> UniqueDefs;
 	for (const FInventoryItemInstance& Item : Inventory->GetAllItems())
 	{
-		if (Item.ItemDef)
+		if (Item.GetItemDef())
 		{
-			UniqueDefs.Add(Item.ItemDef);
+			UniqueDefs.Add(Item.GetItemDef());
 		}
 	}
 	return UniqueDefs.Num();
@@ -287,13 +287,13 @@ bool UInventoryFunctionLibrary::SwapItems(UGridInventoryComponent* InvA, FGuid I
 	InvB->RemoveItem(ItemB_ID, 0);
 
 	bool bSuccess = true;
-	if (!InvB->TryAddItemAt(ItemA.ItemDef, PosB, RotA, ItemA.StackCount)) bSuccess = false;
-	if (bSuccess && !InvA->TryAddItemAt(ItemB.ItemDef, PosA, RotB, ItemB.StackCount)) bSuccess = false;
+	if (!InvB->TryAddItemAt(ItemA.GetItemDef(), PosB, RotA, ItemA.StackCount)) bSuccess = false;
+	if (bSuccess && !InvA->TryAddItemAt(ItemB.GetItemDef(), PosA, RotB, ItemB.StackCount)) bSuccess = false;
 
 	if (!bSuccess)
 	{
-		InvA->TryAddItemAt(ItemA.ItemDef, PosA, RotA, ItemA.StackCount);
-		InvB->TryAddItemAt(ItemB.ItemDef, PosB, RotB, ItemB.StackCount);
+		InvA->TryAddItemAt(ItemA.GetItemDef(), PosA, RotA, ItemA.StackCount);
+		InvB->TryAddItemAt(ItemB.GetItemDef(), PosB, RotB, ItemB.StackCount);
 		return false;
 	}
 	return true;
@@ -344,7 +344,7 @@ TArray<FInventoryItemInstance> UInventoryFunctionLibrary::FindContainersForItemT
 
 	for (const FInventoryItemInstance& Item : Inventory->GetAllItems())
 	{
-		if (Item.IsContainer() && Item.ItemDef->ContainerAcceptsItemType(ItemType))
+		if (Item.IsContainer() && Item.GetItemDef()->ContainerAcceptsItemType(ItemType))
 		{
 			Result.Add(Item);
 		}
@@ -364,9 +364,9 @@ TArray<FInventoryItemInstance> UInventoryFunctionLibrary::DeepSearchByName(
 	// Search main inventory
 	for (const FInventoryItemInstance& Item : Inventory->GetAllItems())
 	{
-		if (Item.ItemDef)
+		if (Item.GetItemDef())
 		{
-			if (Item.ItemDef->DisplayName.ToString().ToLower().Contains(LowerSearch))
+			if (Item.GetItemDef()->DisplayName.ToString().ToLower().Contains(LowerSearch))
 			{
 				Result.Add(Item);
 			}
@@ -380,7 +380,7 @@ TArray<FInventoryItemInstance> UInventoryFunctionLibrary::DeepSearchByName(
 		{
 			for (const FInventoryItemInstance& SubItem : ContainerItem.SubInventory->GetAllItems())
 			{
-				if (SubItem.ItemDef && SubItem.ItemDef->DisplayName.ToString().ToLower().Contains(LowerSearch))
+				if (SubItem.GetItemDef() && SubItem.GetItemDef()->DisplayName.ToString().ToLower().Contains(LowerSearch))
 				{
 					Result.Add(SubItem);
 					// Report which container it was found in (last found)
@@ -402,7 +402,7 @@ TArray<FInventoryItemInstance> UInventoryFunctionLibrary::DeepSearchByType(
 	// Main inventory
 	for (const FInventoryItemInstance& Item : Inventory->GetAllItems())
 	{
-		if (Item.ItemDef && Item.ItemDef->ItemType == ItemType)
+		if (Item.GetItemDef() && Item.GetItemDef()->ItemType == ItemType)
 		{
 			Result.Add(Item);
 		}
@@ -415,7 +415,7 @@ TArray<FInventoryItemInstance> UInventoryFunctionLibrary::DeepSearchByType(
 		{
 			for (const FInventoryItemInstance& SubItem : ContainerItem.SubInventory->GetAllItems())
 			{
-				if (SubItem.ItemDef && SubItem.ItemDef->ItemType == ItemType)
+				if (SubItem.GetItemDef() && SubItem.GetItemDef()->ItemType == ItemType)
 				{
 					Result.Add(SubItem);
 				}
@@ -479,11 +479,11 @@ TArray<FInventoryItemInstance> UInventoryFunctionLibrary::FindMergeCandidates(UG
 	if (!Inventory || !TargetID.IsValid()) return Result;
 
 	FInventoryItemInstance Target = Inventory->GetItemByID(TargetID);
-	if (!Target.IsValid() || !Target.ItemDef || !Target.ItemDef->bCanMergeUpgrade) return Result;
+	if (!Target.IsValid() || !Target.GetItemDef() || !Target.GetItemDef()->bCanMergeUpgrade) return Result;
 
 	for (const FInventoryItemInstance& Item : Inventory->GetAllItems())
 	{
-		if (Item.UniqueID != TargetID && Item.ItemDef == Target.ItemDef)
+		if (Item.UniqueID != TargetID && Item.GetItemDef() == Target.GetItemDef())
 		{
 			Result.Add(Item);
 		}

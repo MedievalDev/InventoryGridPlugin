@@ -240,20 +240,21 @@ void UGridInventoryWidget::OnItemRightClicked_Implementation(const FInventoryIte
 
 void UGridInventoryWidget::OnItemHovered_Implementation(const FInventoryItemInstance& Item, int32 SlotX, int32 SlotY)
 {
-	if (!Item.ItemDef) return;
+	UInventoryItemDefinition* Def = Item.GetItemDef();
+	if (!Def) return;
 
 	// Build tooltip text from item properties
 	FString Tip = Item.GetDisplayName().ToString();
 	Tip += TEXT("\n");
 
-	if (!Item.ItemDef->ItemType.IsNone())
+	if (!Def->ItemType.IsNone())
 	{
-		Tip += FString::Printf(TEXT("Typ: %s\n"), *Item.ItemDef->ItemType.ToString());
+		Tip += FString::Printf(TEXT("Typ: %s\n"), *Def->ItemType.ToString());
 	}
 
-	if (!Item.ItemDef->Description.IsEmpty())
+	if (!Def->Description.IsEmpty())
 	{
-		Tip += Item.ItemDef->Description.ToString();
+		Tip += Def->Description.ToString();
 		Tip += TEXT("\n");
 	}
 
@@ -266,9 +267,9 @@ void UGridInventoryWidget::OnItemHovered_Implementation(const FInventoryItemInst
 
 	// Weight + Stack
 	Tip += FString::Printf(TEXT("Gewicht: %.1f"), Item.GetOwnWeight());
-	if (Item.ItemDef->bCanStack && Item.StackCount > 1)
+	if (Def->bCanStack && Item.StackCount > 1)
 	{
-		Tip += FString::Printf(TEXT("  [%d/%d]"), Item.StackCount, Item.ItemDef->MaxStackSize);
+		Tip += FString::Printf(TEXT("  [%d/%d]"), Item.StackCount, Def->MaxStackSize);
 	}
 
 	SetToolTipText(FText::FromString(Tip));
@@ -281,23 +282,24 @@ void UGridInventoryWidget::OnItemUnhovered_Implementation()
 
 UWidget* UGridInventoryWidget::CreateItemVisual_Implementation(const FInventoryItemInstance& Item)
 {
-	if (!Item.ItemDef || !WidgetTree) return nullptr;
+	UInventoryItemDefinition* Def = Item.GetItemDef();
+	if (!Def || !WidgetTree) return nullptr;
 
 	UOverlay* Overlay = WidgetTree->ConstructWidget<UOverlay>();
 
 	UImage* IconImage = WidgetTree->ConstructWidget<UImage>();
 
 	// Use cached icon (preloaded asynchronously), sync fallback if not ready
-	if (!Item.ItemDef->Icon.IsNull())
+	if (!Def->Icon.IsNull())
 	{
-		UTexture2D* CachedTex = GetCachedIcon(Item.ItemDef->Icon);
+		UTexture2D* CachedTex = GetCachedIcon(Def->Icon);
 		if (!CachedTex)
 		{
 			// Sync fallback — ensures icons always display on first frame
-			CachedTex = Item.ItemDef->Icon.LoadSynchronous();
+			CachedTex = Def->Icon.LoadSynchronous();
 			if (CachedTex)
 			{
-				IconCache.Add(Item.ItemDef->Icon.ToSoftObjectPath(), CachedTex);
+				IconCache.Add(Def->Icon.ToSoftObjectPath(), CachedTex);
 			}
 		}
 		if (CachedTex)
@@ -310,7 +312,7 @@ UWidget* UGridInventoryWidget::CreateItemVisual_Implementation(const FInventoryI
 	IconImage->SetBrushSize(FVector2D(EffSize.X * CellSize, EffSize.Y * CellSize));
 	Overlay->AddChild(IconImage);
 
-	if (Item.ItemDef->bCanStack && Item.StackCount > 1)
+	if (Def->bCanStack && Item.StackCount > 1)
 	{
 		UTextBlock* Count = WidgetTree->ConstructWidget<UTextBlock>();
 		Count->SetText(FText::AsNumber(Item.StackCount));
@@ -324,7 +326,7 @@ UWidget* UGridInventoryWidget::CreateItemVisual_Implementation(const FInventoryI
 	}
 
 	// Show class level indicator
-	if (Item.ItemDef->bCanMergeUpgrade && Item.CurrentClassLevel > 1)
+	if (Def->bCanMergeUpgrade && Item.CurrentClassLevel > 1)
 	{
 		UTextBlock* ClassText = WidgetTree->ConstructWidget<UTextBlock>();
 		ClassText->SetText(Item.GetDisplayName());
@@ -502,8 +504,9 @@ void UGridInventoryWidget::NativeOnDragDetected(const FGeometry& InGeometry, con
 	FInventoryItemInstance Item = InventoryComponent->GetItemByID(PendingDragItemID);
 	if (!Item.IsValid()) return;
 
+	UInventoryItemDefinition* DragDef = Item.GetItemDef();
 	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] DragDetected — Item '%s' from Cell (%d, %d)"),
-		*Item.ItemDef->DisplayName.ToString(), PendingDragCell.X, PendingDragCell.Y);
+		DragDef ? *DragDef->DisplayName.ToString() : TEXT("???"), PendingDragCell.X, PendingDragCell.Y);
 
 	UInventoryDragDropOperation* DragOp = NewObject<UInventoryDragDropOperation>();
 	DragOp->DraggedItem = Item;
@@ -514,7 +517,7 @@ void UGridInventoryWidget::NativeOnDragDetected(const FGeometry& InGeometry, con
 	DragOp->GrabOffset = PendingDragCell - Item.GridPosition;
 
 	// Alt+drag: pick up full stack, split decision happens on drop
-	if (bPendingDragAlt && Item.ItemDef->bCanStack && Item.StackCount > 1)
+	if (bPendingDragAlt && DragDef && DragDef->bCanStack && Item.StackCount > 1)
 	{
 		DragOp->DragCount = 0;
 		DragOp->bAltSplitDrag = true;
@@ -528,7 +531,7 @@ void UGridInventoryWidget::NativeOnDragDetected(const FGeometry& InGeometry, con
 		DragOp->DragCount = PendingSplitCount;
 		PendingSplitCount = 0;
 	}
-	else if (Item.ItemDef->bCanStack && Item.StackCount > 1 && !bPendingDragCtrl)
+	else if (DragDef && DragDef->bCanStack && Item.StackCount > 1 && !bPendingDragCtrl)
 	{
 		DragOp->DragCount = 1;
 	}
@@ -630,11 +633,11 @@ bool UGridInventoryWidget::NativeOnDragOver(const FGeometry& InGeometry, const F
 	bool bCanPlace = false;
 	if (DragOp->SourceInventory == InventoryComponent && DragOp->DragCount == 0)
 	{
-		bCanPlace = InventoryComponent->CanPlaceAtIgnoring(DragOp->DraggedItem.ItemDef, DropPos, bEffRot, DragOp->DraggedItem.UniqueID);
+		bCanPlace = InventoryComponent->CanPlaceAtIgnoring(DragOp->DraggedItem.GetItemDef(), DropPos, bEffRot, DragOp->DraggedItem.UniqueID);
 	}
 	else
 	{
-		bCanPlace = InventoryComponent->CanPlaceAt(DragOp->DraggedItem.ItemDef, DropPos, bEffRot);
+		bCanPlace = InventoryComponent->CanPlaceAt(DragOp->DraggedItem.GetItemDef(), DropPos, bEffRot);
 	}
 
 	if (bCanPlace)
@@ -645,15 +648,17 @@ bool UGridInventoryWidget::NativeOnDragOver(const FGeometry& InGeometry, const F
 
 	// Check if hovering over a same-type item for stack merge or class-level merge
 	FInventoryItemInstance TargetItem = InventoryComponent->GetItemAtPosition(Cell);
+	UInventoryItemDefinition* TargetDef = TargetItem.GetItemDef();
+	UInventoryItemDefinition* DraggedDef = DragOp->DraggedItem.GetItemDef();
 	if (TargetItem.IsValid() && TargetItem.UniqueID != DragOp->DraggedItem.UniqueID
-		&& TargetItem.ItemDef && TargetItem.ItemDef == DragOp->DraggedItem.ItemDef)
+		&& TargetDef && TargetDef == DraggedDef)
 	{
 		bool bCanMerge = false;
-		if (TargetItem.ItemDef->bCanStack && TargetItem.StackCount < TargetItem.ItemDef->MaxStackSize)
+		if (TargetDef->bCanStack && TargetItem.StackCount < TargetDef->MaxStackSize)
 		{
 			bCanMerge = true;
 		}
-		else if (TargetItem.ItemDef->bCanMergeUpgrade && TargetItem.CurrentClassLevel < TargetItem.ItemDef->MaxClassLevel)
+		else if (TargetDef->bCanMergeUpgrade && TargetItem.CurrentClassLevel < TargetDef->MaxClassLevel)
 		{
 			bCanMerge = true;
 		}
@@ -747,10 +752,11 @@ bool UGridInventoryWidget::NativeOnDrop(const FGeometry& InGeometry, const FDrag
 		Cell.X, Cell.Y, DropPos.X, DropPos.Y);
 
 	// Alt+Split workflow: show slider at drop position
-	if (DragOp->bAltSplitDrag && DragOp->DraggedItem.ItemDef
-		&& DragOp->DraggedItem.ItemDef->bCanStack && DragOp->DraggedItem.StackCount > 1)
+	UInventoryItemDefinition* DragDropDef = DragOp->DraggedItem.GetItemDef();
+	if (DragOp->bAltSplitDrag && DragDropDef
+		&& DragDropDef->bCanStack && DragOp->DraggedItem.StackCount > 1)
 	{
-		bool bCanPlace = InventoryComponent->CanPlaceAt(DragOp->DraggedItem.ItemDef, DropPos, bEffRot);
+		bool bCanPlace = InventoryComponent->CanPlaceAt(DragDropDef, DropPos, bEffRot);
 		if (!bCanPlace)
 		{
 			RestoreDragHiddenVisual();
@@ -796,11 +802,12 @@ bool UGridInventoryWidget::NativeOnDrop(const FGeometry& InGeometry, const FDrag
 
 	// Check for stack merge or class-level merge at drop position
 	FInventoryItemInstance TargetItem = InventoryComponent->GetItemAtPosition(Cell);
+	UInventoryItemDefinition* DropTargetDef = TargetItem.GetItemDef();
 	if (TargetItem.IsValid() && TargetItem.UniqueID != DragOp->DraggedItem.UniqueID
-		&& TargetItem.ItemDef && TargetItem.ItemDef == DragOp->DraggedItem.ItemDef)
+		&& DropTargetDef && DropTargetDef == DragDropDef)
 	{
 		// Stack merge (stackable items like herbs)
-		if (TargetItem.ItemDef->bCanStack && TargetItem.StackCount < TargetItem.ItemDef->MaxStackSize)
+		if (DropTargetDef->bCanStack && TargetItem.StackCount < DropTargetDef->MaxStackSize)
 		{
 			int32 Moved = 0;
 			if (DragOp->SourceInventory == InventoryComponent)
@@ -827,7 +834,7 @@ bool UGridInventoryWidget::NativeOnDrop(const FGeometry& InGeometry, const FDrag
 		}
 
 		// Class-level merge (non-stackable upgradeable items like swords)
-		if (TargetItem.ItemDef->bCanMergeUpgrade && TargetItem.CurrentClassLevel < TargetItem.ItemDef->MaxClassLevel)
+		if (DropTargetDef->bCanMergeUpgrade && TargetItem.CurrentClassLevel < DropTargetDef->MaxClassLevel)
 		{
 			bool bMerged = false;
 			if (DragOp->SourceInventory == InventoryComponent)
@@ -1020,8 +1027,9 @@ void UGridInventoryWidget::RefreshVisibleItems()
 		if (Existing)
 		{
 			// Check if icon became available since visual was created
-			const bool bIconNowAvailable = (Item.ItemDef && !Item.ItemDef->Icon.IsNull())
-				? (GetCachedIcon(Item.ItemDef->Icon) != nullptr) : true;
+			UInventoryItemDefinition* VisDef = Item.GetItemDef();
+			const bool bIconNowAvailable = (VisDef && !VisDef->Icon.IsNull())
+				? (GetCachedIcon(VisDef->Icon) != nullptr) : true;
 
 			// Only rebuild if something changed (position, rotation, stack, class level, icon)
 			if (Existing->Position == Pos && Existing->bRotated == Item.bIsRotated
@@ -1064,8 +1072,9 @@ void UGridInventoryWidget::RefreshVisibleItems()
 		Entry.StackCount = Item.StackCount;
 		Entry.ClassLevel = Item.CurrentClassLevel;
 		Entry.bRotated = Item.bIsRotated;
-		Entry.bIconLoaded = (Item.ItemDef && !Item.ItemDef->Icon.IsNull())
-			? (GetCachedIcon(Item.ItemDef->Icon) != nullptr) : true;
+		UInventoryItemDefinition* EntryDef = Item.GetItemDef();
+		Entry.bIconLoaded = (EntryDef && !EntryDef->Icon.IsNull())
+			? (GetCachedIcon(EntryDef->Icon) != nullptr) : true;
 		Entry.Visual = SB;
 		ActiveItemVisuals.Add(Item.UniqueID, Entry);
 
@@ -1195,7 +1204,8 @@ void UGridInventoryWidget::PreloadVisibleIcons()
 
 	for (const FInventoryItemInstance& Item : InventoryComponent->GetAllItems())
 	{
-		if (!Item.IsValid() || !Item.ItemDef || Item.ItemDef->Icon.IsNull()) continue;
+		UInventoryItemDefinition* Def = Item.GetItemDef();
+		if (!Item.IsValid() || !Def || Def->Icon.IsNull()) continue;
 
 		// Only preload icons for items overlapping the visible viewport
 		// This avoids loading textures for hundreds of off-screen items
@@ -1204,13 +1214,13 @@ void UGridInventoryWidget::PreloadVisibleIcons()
 		if (Pos.X + Size.X <= VisibleMin.X || Pos.X >= VisibleMax.X) continue;
 		if (Pos.Y + Size.Y <= VisibleMin.Y || Pos.Y >= VisibleMax.Y) continue;
 
-		const FSoftObjectPath Path = Item.ItemDef->Icon.ToSoftObjectPath();
+		const FSoftObjectPath Path = Def->Icon.ToSoftObjectPath();
 
 		// Skip already cached — O(1) hash lookup
 		if (IconCache.Contains(Path)) continue;
 
 		// Check if already loaded in memory (from another source)
-		UTexture2D* AlreadyLoaded = Item.ItemDef->Icon.Get();
+		UTexture2D* AlreadyLoaded = Def->Icon.Get();
 		if (AlreadyLoaded)
 		{
 			IconCache.Add(Path, AlreadyLoaded);

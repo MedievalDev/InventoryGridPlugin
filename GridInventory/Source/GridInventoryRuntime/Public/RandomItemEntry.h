@@ -25,7 +25,7 @@ struct GRIDINVENTORYRUNTIME_API FRandomItemEntry
 
 	/** The item that may appear */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Random Item")
-	UInventoryItemDefinition* ItemDef;
+	TSoftObjectPtr<UInventoryItemDefinition> ItemDef;
 
 	/** Minimum count if the item spawns */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Random Item", meta = (ClampMin = "1"))
@@ -43,8 +43,7 @@ struct GRIDINVENTORYRUNTIME_API FRandomItemEntry
 	float SpawnChance;
 
 	FRandomItemEntry()
-		: ItemDef(nullptr)
-		, MinCount(1)
+		: MinCount(1)
 		, MaxCount(1)
 		, SpawnChance(0.5f)
 	{

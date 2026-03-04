@@ -18,7 +18,6 @@ AInventoryContainer::AInventoryContainer()
 	bConsumeKey = false;
 	bIsOpen = false;
 	CurrentInteractor = nullptr;
-	LootTable = nullptr;
 	DropWeightMultiplier = 1.0f;
 	LootLevel = 0;
 	bLootGenerated = false;
@@ -75,7 +74,7 @@ void AInventoryContainer::GenerateRandomDefaults()
 		for (int32 i = 0; i < RandomDefaultItems.Num(); ++i)
 		{
 			const FRandomItemEntry& Entry = RandomDefaultItems[i];
-			if (!Entry.ItemDef || Entry.SpawnChance <= 0.0f) continue;
+			if (Entry.ItemDef.IsNull() || Entry.SpawnChance <= 0.0f) continue;
 
 			const float W = Entry.SpawnChance * DropWeightMultiplier;
 			if (W <= 0.0f) continue;
@@ -105,7 +104,11 @@ void AInventoryContainer::GenerateRandomDefaults()
 
 			const FRandomItemEntry& Chosen = RandomDefaultItems[ValidIndices[ChosenPoolIdx]];
 			const int32 Count = FMath::RandRange(Chosen.MinCount, FMath::Max(Chosen.MinCount, Chosen.MaxCount));
-			InventoryComponent->TryAddItem(Chosen.ItemDef, Count);
+			UInventoryItemDefinition* LoadedDef = Chosen.ItemDef.LoadSynchronous();
+			if (LoadedDef)
+			{
+				InventoryComponent->TryAddItem(LoadedDef, Count);
+			}
 
 			// Remove from pool (no duplicates)
 			TotalWeight -= Weights[ChosenPoolIdx];
@@ -118,14 +121,18 @@ void AInventoryContainer::GenerateRandomDefaults()
 		// === Individual roll mode: each entry rolls independently ===
 		for (const FRandomItemEntry& Entry : RandomDefaultItems)
 		{
-			if (!Entry.ItemDef || Entry.SpawnChance <= 0.0f) continue;
+			if (Entry.ItemDef.IsNull() || Entry.SpawnChance <= 0.0f) continue;
 
 			const float AdjustedChance = FMath::Clamp(Entry.SpawnChance * DropWeightMultiplier, 0.0f, 1.0f);
 
 			if (FMath::FRand() <= AdjustedChance)
 			{
 				const int32 Count = FMath::RandRange(Entry.MinCount, FMath::Max(Entry.MinCount, Entry.MaxCount));
-				InventoryComponent->TryAddItem(Entry.ItemDef, Count);
+				UInventoryItemDefinition* LoadedDef = Entry.ItemDef.LoadSynchronous();
+				if (LoadedDef)
+				{
+					InventoryComponent->TryAddItem(LoadedDef, Count);
+				}
 			}
 		}
 	}
@@ -166,7 +173,7 @@ bool AInventoryContainer::TryOpen(AActor* Interactor)
 				// Find and remove one key item
 				for (const FInventoryItemInstance& Item : InteractorInv->GetAllItems())
 				{
-					if (Item.ItemDef && Item.ItemDef->ItemID == RequiredKeyItemID)
+					if (Item.GetItemDef() && Item.GetItemDef()->ItemID == RequiredKeyItemID)
 					{
 						InteractorInv->RemoveItem(Item.UniqueID, 1);
 						break;
@@ -182,7 +189,7 @@ bool AInventoryContainer::TryOpen(AActor* Interactor)
 	CurrentInteractor = Interactor;
 
 	// Auto-generate loot on first open (async to avoid hitches)
-	if (!bLootGenerated && LootTable)
+	if (!bLootGenerated && !LootTable.IsNull())
 	{
 		GenerateLootAsync(0);
 	}
@@ -194,11 +201,14 @@ bool AInventoryContainer::TryOpen(AActor* Interactor)
 
 void AInventoryContainer::GenerateLoot(int32 OverrideLevel)
 {
-	if (!LootTable || !InventoryComponent) return;
+	if (LootTable.IsNull() || !InventoryComponent) return;
+
+	ULootTable* LoadedTable = LootTable.LoadSynchronous();
+	if (!LoadedTable) return;
 
 	const int32 Level = (OverrideLevel > 0) ? OverrideLevel : FMath::Max(1, LootLevel);
 
-	TArray<FLootResult> Loot = LootTable->GenerateLoot(Level, DropWeightMultiplier);
+	TArray<FLootResult> Loot = LoadedTable->GenerateLoot(Level, DropWeightMultiplier);
 
 	for (const FLootResult& LR : Loot)
 	{
@@ -223,7 +233,10 @@ void AInventoryContainer::RegenerateLoot(int32 OverrideLevel)
 
 void AInventoryContainer::GenerateLootAsync(int32 OverrideLevel)
 {
-	if (!LootTable || !InventoryComponent) return;
+	if (LootTable.IsNull() || !InventoryComponent) return;
+
+	ULootTable* LoadedTable = LootTable.LoadSynchronous();
+	if (!LoadedTable) return;
 
 	const int32 Level = (OverrideLevel > 0) ? OverrideLevel : FMath::Max(1, LootLevel);
 
@@ -232,7 +245,7 @@ void AInventoryContainer::GenerateLootAsync(int32 OverrideLevel)
 
 	TWeakObjectPtr<AInventoryContainer> WeakThis(this);
 
-	LootTable->GenerateLootAsync(Level, DropWeightMultiplier,
+	LoadedTable->GenerateLootAsync(Level, DropWeightMultiplier,
 		[WeakThis](const TArray<FLootResult>& Loot)
 		{
 			if (!WeakThis.IsValid()) return;
@@ -290,7 +303,7 @@ bool AInventoryContainer::HasRequiredKey(AActor* Actor) const
 
 	for (const FInventoryItemInstance& Item : Inv->GetAllItems())
 	{
-		if (Item.ItemDef && Item.ItemDef->ItemID == RequiredKeyItemID)
+		if (Item.GetItemDef() && Item.GetItemDef()->ItemID == RequiredKeyItemID)
 		{
 			return true;
 		}

@@ -71,7 +71,7 @@ bool UEquipmentComponent::EquipItem(FName SlotID, UInventoryItemDefinition* Item
 	{
 		// Try stacking onto existing
 		FInventoryItemInstance& Existing = EquippedItemsArray[ExistingIdx];
-		if (Existing.ItemDef == ItemDef && SlotDef->bAllowStacking)
+		if (Existing.GetItemDef() == ItemDef && SlotDef->bAllowStacking)
 		{
 			const int32 CanAdd = SlotDef->MaxStackSize - Existing.StackCount;
 			if (CanAdd > 0)
@@ -112,7 +112,7 @@ bool UEquipmentComponent::EquipFromInventory(FName SlotID, FGuid InventoryItemID
 	}
 
 	// Check compatibility
-	if (!CanEquipInSlot(SlotID, InvItem.ItemDef))
+	if (!CanEquipInSlot(SlotID, InvItem.GetItemDef()))
 	{
 		return false;
 	}
@@ -133,11 +133,11 @@ bool UEquipmentComponent::EquipFromInventory(FName SlotID, FGuid InventoryItemID
 	{
 		Internal_ClearSlot(SlotID);
 		OnItemUnequipped.Broadcast(SlotID, OldItem);
-		LinkedInventory->TryAddItem(OldItem.ItemDef, OldItem.StackCount);
+		LinkedInventory->TryAddItem(OldItem.GetItemDef(), OldItem.StackCount);
 	}
 
 	// Equip new item
-	FInventoryItemInstance EquipItem = FInventoryItemInstance::CreateNew(InvItem.ItemDef, InvItem.StackCount);
+	FInventoryItemInstance EquipItem = FInventoryItemInstance::CreateNew(InvItem.GetItemDef(), InvItem.StackCount);
 	Internal_SetSlot(SlotID, EquipItem);
 
 	OnItemEquipped.Broadcast(SlotID, EquipItem);
@@ -161,7 +161,7 @@ bool UEquipmentComponent::UnequipItem(FName SlotID, int32 Count)
 		// Return partial stack to inventory
 		if (LinkedInventory)
 		{
-			LinkedInventory->TryAddItem(Item.ItemDef, Count);
+			LinkedInventory->TryAddItem(Item.GetItemDef(), Count);
 		}
 		Item.StackCount -= Count;
 		OnEquipmentChanged.Broadcast();
@@ -174,10 +174,11 @@ bool UEquipmentComponent::UnequipItem(FName SlotID, int32 Count)
 	// Return to inventory
 	if (LinkedInventory)
 	{
-		if (!LinkedInventory->TryAddItem(RemovedItem.ItemDef, RemovedItem.StackCount))
+		UInventoryItemDefinition* RemovedDef = RemovedItem.GetItemDef();
+		if (!RemovedDef || !LinkedInventory->TryAddItem(RemovedDef, RemovedItem.StackCount))
 		{
 			UE_LOG(LogTemp, Warning, TEXT("Equipment: Inventory full, cannot unequip '%s'"),
-				*RemovedItem.ItemDef->DisplayName.ToString());
+				RemovedDef ? *RemovedDef->DisplayName.ToString() : TEXT("???"));
 			return false;
 		}
 	}
@@ -207,7 +208,7 @@ bool UEquipmentComponent::SwapSlots(FName SlotA, FName SlotB)
 	if (ItemA.IsValid())
 	{
 		const FEquipmentSlotDefinition* DefB = FindSlotDef(SlotB);
-		if (DefB && !DefB->AcceptsItemType(ItemA.ItemDef->ItemType))
+		if (DefB && !DefB->AcceptsItemType(ItemA.GetItemDef()->ItemType))
 		{
 			return false;
 		}
@@ -215,7 +216,7 @@ bool UEquipmentComponent::SwapSlots(FName SlotA, FName SlotB)
 	if (ItemB.IsValid())
 	{
 		const FEquipmentSlotDefinition* DefA = FindSlotDef(SlotA);
-		if (DefA && !DefA->AcceptsItemType(ItemB.ItemDef->ItemType))
+		if (DefA && !DefA->AcceptsItemType(ItemB.GetItemDef()->ItemType))
 		{
 			return false;
 		}

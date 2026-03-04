@@ -22,8 +22,15 @@ struct GRIDINVENTORYRUNTIME_API FInventoryItemInstance
 	UPROPERTY(BlueprintReadOnly, Category = "Item Instance")
 	FGuid UniqueID;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Item Instance")
-	UInventoryItemDefinition* ItemDef;
+	UPROPERTY(BlueprintReadOnly, Category = "Item Instance")
+	TSoftObjectPtr<UInventoryItemDefinition> ItemDefSoft;
+
+	/** Get the item definition (loads synchronously if needed) */
+	UInventoryItemDefinition* GetItemDef() const;
+
+	/** Blueprint-accessible getter */
+	UFUNCTION(BlueprintPure, Category = "Item Instance", meta = (DisplayName = "Get Item Definition"))
+	UInventoryItemDefinition* BP_GetItemDef() const { return GetItemDef(); }
 
 	UPROPERTY(BlueprintReadOnly, Category = "Item Instance")
 	FIntPoint GridPosition;

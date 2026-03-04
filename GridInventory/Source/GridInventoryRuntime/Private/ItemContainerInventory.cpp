@@ -133,9 +133,10 @@ bool UItemContainerInventory::MoveItem(FGuid UniqueID, FIntPoint NewPosition, bo
 	if (Index == INDEX_NONE) return false;
 
 	FInventoryItemInstance& Item = Items[Index];
-	if (bRotated && (!Item.ItemDef || !Item.ItemDef->bCanRotate)) bRotated = false;
+	UInventoryItemDefinition* Def = Item.GetItemDef();
+	if (bRotated && (!Def || !Def->bCanRotate)) bRotated = false;
 
-	const FIntPoint EffSize = Item.ItemDef->GetEffectiveSize(bRotated);
+	const FIntPoint EffSize = Def->GetEffectiveSize(bRotated);
 	if (!Grid.CanPlaceAtIgnoring(NewPosition, EffSize, UniqueID)) return false;
 
 	// O(item_area) remove instead of O(total_cells)
@@ -154,16 +155,17 @@ bool UItemContainerInventory::RotateItem(FGuid UniqueID)
 	if (Index == INDEX_NONE) return false;
 
 	FInventoryItemInstance& Item = Items[Index];
-	if (!Item.ItemDef || !Item.ItemDef->bCanRotate) return false;
+	UInventoryItemDefinition* Def = Item.GetItemDef();
+	if (!Def || !Def->bCanRotate) return false;
 
-	if (Item.ItemDef->GridSize.X == Item.ItemDef->GridSize.Y)
+	if (Def->GridSize.X == Def->GridSize.Y)
 	{
 		Item.bIsRotated = !Item.bIsRotated;
 		return true;
 	}
 
 	const bool bNewRot = !Item.bIsRotated;
-	const FIntPoint NewSize = Item.ItemDef->GetEffectiveSize(bNewRot);
+	const FIntPoint NewSize = Def->GetEffectiveSize(bNewRot);
 
 	if (Grid.CanPlaceAtIgnoring(Item.GridPosition, NewSize, UniqueID))
 	{
@@ -212,7 +214,7 @@ bool UItemContainerInventory::HasSpaceFor(UInventoryItemDefinition* ItemDef, int
 	{
 		for (const FInventoryItemInstance& Item : Items)
 		{
-			if (Item.ItemDef == ItemDef && Item.StackCount < ItemDef->MaxStackSize)
+			if (Item.GetItemDef() == ItemDef && Item.StackCount < ItemDef->MaxStackSize)
 			{
 				Remaining -= (ItemDef->MaxStackSize - Item.StackCount);
 				if (Remaining <= 0) return true;
@@ -228,7 +230,7 @@ int32 UItemContainerInventory::GetItemCount(UInventoryItemDefinition* ItemDef) c
 	int32 Total = 0;
 	for (const FInventoryItemInstance& Item : Items)
 	{
-		if (Item.ItemDef == ItemDef) Total += Item.StackCount;
+		if (Item.GetItemDef() == ItemDef) Total += Item.StackCount;
 	}
 	return Total;
 }
@@ -261,12 +263,14 @@ void UItemContainerInventory::SortContainer()
 
 	for (FInventoryItemInstance& Item : Copy)
 	{
-		FGridPlacementResult Slot = Grid.FindFirstFreeSlot(Item.ItemDef->GridSize, Item.ItemDef->bCanRotate);
+		UInventoryItemDefinition* Def = Item.GetItemDef();
+		if (!Def) continue;
+		FGridPlacementResult Slot = Grid.FindFirstFreeSlot(Def->GridSize, Def->bCanRotate);
 		if (Slot.bSuccess)
 		{
 			Item.GridPosition = Slot.Position;
 			Item.bIsRotated = Slot.bRotated;
-			Grid.PlaceItem(Item.UniqueID, Slot.Position, Item.ItemDef->GetEffectiveSize(Slot.bRotated));
+			Grid.PlaceItem(Item.UniqueID, Slot.Position, Def->GetEffectiveSize(Slot.bRotated));
 			ItemIndexMap.Add(Item.UniqueID, Items.Num());
 			Items.Add(Item);
 		}
@@ -338,7 +342,7 @@ int32 UItemContainerInventory::TryStackOntoExisting(UInventoryItemDefinition* It
 	for (FInventoryItemInstance& Item : Items)
 	{
 		if (Remaining <= 0) break;
-		if (Item.ItemDef == ItemDef && Item.StackCount < ItemDef->MaxStackSize)
+		if (Item.GetItemDef() == ItemDef && Item.StackCount < ItemDef->MaxStackSize)
 		{
 			const int32 ToAdd = FMath::Min(Remaining, ItemDef->MaxStackSize - Item.StackCount);
 			Item.StackCount += ToAdd;
