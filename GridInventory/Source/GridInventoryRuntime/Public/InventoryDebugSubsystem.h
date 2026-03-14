@@ -81,6 +81,10 @@ private:
 	void Cmd_ContainerOpen(const TArray<FString>& Args, UWorld* World);
 	void Cmd_ContainerLoot(const TArray<FString>& Args, UWorld* World);
 
+	// Gold
+	void Cmd_GoldAdd(const TArray<FString>& Args, UWorld* World);
+	void Cmd_GoldSet(const TArray<FString>& Args, UWorld* World);
+
 	// Helpers
 	UGridInventoryComponent* GetPlayerInventory(UWorld* World) const;
 	UEquipmentComponent* GetPlayerEquipment(UWorld* World) const;

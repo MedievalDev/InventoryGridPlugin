@@ -290,7 +290,52 @@ bool UEquipmentComponent::CanEquipInSlot(FName SlotID, UInventoryItemDefinition*
 	const FEquipmentSlotDefinition* SlotDef = FindSlotDef(SlotID);
 	if (!SlotDef) return false;
 
-	return SlotDef->AcceptsItemType(ItemDef->ItemType);
+	if (!SlotDef->AcceptsItemType(ItemDef->ItemType)) return false;
+
+	return MeetsRequirements(ItemDef);
+}
+
+bool UEquipmentComponent::MeetsRequirements(UInventoryItemDefinition* ItemDef) const
+{
+	if (!ItemDef || ItemDef->EquipRequirements.Num() == 0) return true;
+	if (PlayerStats.Num() == 0) return true;
+
+	for (const FItemRequirement& Req : ItemDef->EquipRequirements)
+	{
+		const float* FoundValue = PlayerStats.Find(Req.RequirementID);
+		const float PlayerValue = FoundValue ? *FoundValue : 0.0f;
+		if (PlayerValue < Req.MinValue) return false;
+	}
+	return true;
+}
+
+TArray<FItemRequirement> UEquipmentComponent::GetUnmetRequirements(UInventoryItemDefinition* ItemDef) const
+{
+	TArray<FItemRequirement> Unmet;
+	if (!ItemDef || ItemDef->EquipRequirements.Num() == 0) return Unmet;
+	if (PlayerStats.Num() == 0) return Unmet;
+
+	for (const FItemRequirement& Req : ItemDef->EquipRequirements)
+	{
+		const float* FoundValue = PlayerStats.Find(Req.RequirementID);
+		const float PlayerValue = FoundValue ? *FoundValue : 0.0f;
+		if (PlayerValue < Req.MinValue)
+		{
+			Unmet.Add(Req);
+		}
+	}
+	return Unmet;
+}
+
+void UEquipmentComponent::SetPlayerStat(FName StatID, float Value)
+{
+	PlayerStats.FindOrAdd(StatID) = Value;
+}
+
+float UEquipmentComponent::GetPlayerStat(FName StatID) const
+{
+	const float* Found = PlayerStats.Find(StatID);
+	return Found ? *Found : 0.0f;
 }
 
 FName UEquipmentComponent::FindEmptySlotForItem(UInventoryItemDefinition* ItemDef) const
@@ -394,4 +439,21 @@ void UEquipmentComponent::Internal_ClearSlot(FName SlotID)
 		EquippedSlotIDs.RemoveAt(Idx);
 		EquippedItemsArray.RemoveAt(Idx);
 	}
+}
+
+// ============================================================================
+// Save/Load Support
+// ============================================================================
+
+void UEquipmentComponent::RestoreEquipmentSlot(FName SlotID, const FInventoryItemInstance& Item)
+{
+	Internal_ClearSlot(SlotID);
+	Internal_SetSlot(SlotID, Item);
+}
+
+void UEquipmentComponent::ClearAllSlots()
+{
+	EquippedSlotIDs.Empty();
+	EquippedItemsArray.Empty();
+	OnEquipmentChanged.Broadcast();
 }

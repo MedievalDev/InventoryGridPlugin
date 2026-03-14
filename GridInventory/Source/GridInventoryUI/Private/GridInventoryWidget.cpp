@@ -3,6 +3,7 @@
 #include "GridInventoryWidget.h"
 #include "GridInventoryComponent.h"
 #include "InventorySlotWidget.h"
+#include "InventoryContextMenuWidget.h"
 #include "InventoryItemDefinition.h"
 #include "InventoryDragDropOperation.h"
 #include "Components/CanvasPanel.h"
@@ -11,17 +12,42 @@
 #include "Components/SizeBox.h"
 #include "Components/Overlay.h"
 #include "Components/TextBlock.h"
+#include "Components/Slider.h"
+#include "Components/Border.h"
+#include "Components/HorizontalBox.h"
+#include "Components/HorizontalBoxSlot.h"
+#include "Components/Button.h"
 #include "Blueprint/WidgetTree.h"
 #include "Engine/StreamableManager.h"
+#include "Engine/AssetManager.h"
 
 void UGridInventoryWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 	if (CellSize <= 0.0f) CellSize = 64.0f;
 	if (ViewportBuffer <= 0) ViewportBuffer = 3;
+	if (GridLineThickness <= 0.0f) GridLineThickness = 1.0f;
+	if (GridLineColor == FLinearColor(0, 0, 0, 0)) GridLineColor = FLinearColor(0.3f, 0.3f, 0.3f, 0.6f);
 	VisibleMin = FIntPoint::ZeroValue;
 	VisibleMax = FIntPoint::ZeroValue;
 	HoveredCell = FIntPoint(-1, -1);
+	ResolvedSlotWidgetClass = nullptr;
+	CachedGridLineWidth = 0;
+	CachedGridLineHeight = 0;
+	CachedInventoryWidth = 0;
+	CachedInventoryHeight = 0;
+	bPendingDragCtrl = false;
+	bPendingDragAlt = false;
+	bShowingSplitSlider = false;
+	SplitSliderWidget = nullptr;
+	SplitSliderCountLabel = nullptr;
+	PendingSplitCount = 0;
+	DragHiddenItemID.Invalidate();
+	ActiveDragVisual = nullptr;
+	bPendingDropSplit = false;
+	DropSplitItemID.Invalidate();
+	DropSplitRotated = false;
+	DropSplitSourceInventory = nullptr;
 
 	// Make this widget hittable and focusable — grid handles all mouse events
 	bIsFocusable = true;
@@ -30,12 +56,40 @@ void UGridInventoryWidget::NativeConstruct()
 	// Force all blueprint child widgets (SizeBox, Border, GridCanvas etc.)
 	// to SelfHitTestInvisible so mouse events bubble up to this widget
 	SetupHitTestConfiguration();
+
+	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] NativeConstruct — Visibility=%d, GridCanvas=%s, bIsFocusable=%d"),
+		(int32)GetVisibility(), GridCanvas ? TEXT("OK") : TEXT("NULL"), bIsFocusable ? 1 : 0);
 }
 
 void UGridInventoryWidget::NativeDestruct()
 {
+	CloseSplitSlider();
+	CloseContextMenu();
+
+	// Cancel any in-flight async icon loads
+	if (IconStreamHandle.IsValid() && IconStreamHandle->IsActive())
+	{
+		IconStreamHandle->CancelHandle();
+	}
+	IconStreamHandle.Reset();
+	IconCache.Empty();
+
 	UnbindFromInventory();
 	Super::NativeDestruct();
+}
+
+void UGridInventoryWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
+{
+	Super::NativeTick(MyGeometry, InDeltaTime);
+
+	// Guard: Blueprint may toggle visibility to SelfHitTestInvisible (the UE4 default
+	// for "Set Visibility" nodes). That makes this widget non-hittable and breaks all
+	// mouse handling. Upgrade to Visible whenever detected.
+	if (GetVisibility() == ESlateVisibility::SelfHitTestInvisible)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[GridInventory] Visibility was SelfHitTestInvisible — upgrading to Visible for hit testing"));
+		SetVisibility(ESlateVisibility::Visible);
+	}
 }
 
 void UGridInventoryWidget::SetInventoryComponent(UGridInventoryComponent* InInventory)
@@ -47,11 +101,29 @@ void UGridInventoryWidget::SetInventoryComponent(UGridInventoryComponent* InInve
 	{
 		InventoryComponent->OnInventoryChanged.AddDynamic(this, &UGridInventoryWidget::OnInventoryChanged);
 
+		// Read CellSize from component (overrides widget default)
+		if (InventoryComponent->CellSize > 0.0f)
+		{
+			CellSize = InventoryComponent->CellSize;
+		}
+
 		// Initialize with full visible area (will be narrowed by UpdateVisibleArea)
 		VisibleMin = FIntPoint(0, 0);
 		VisibleMax = FIntPoint(InventoryComponent->GridWidth, InventoryComponent->GridHeight);
+		CachedInventoryWidth = InventoryComponent->GridWidth;
+		CachedInventoryHeight = InventoryComponent->GridHeight;
 
+		// Re-enforce hittable state — Blueprint calls may have changed visibility
+		SetVisibility(ESlateVisibility::Visible);
+		SetupHitTestConfiguration();
+
+		// Preload icons asynchronously before first refresh
+		PreloadVisibleIcons();
 		RefreshGrid();
+
+		UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SetInventoryComponent — Grid %dx%d, GridCanvas=%s"),
+			InventoryComponent->GridWidth, InventoryComponent->GridHeight,
+			GridCanvas ? TEXT("OK") : TEXT("NULL"));
 	}
 }
 
@@ -82,6 +154,7 @@ void UGridInventoryWidget::UpdateVisibleArea(FVector2D ViewportOffset, FVector2D
 
 void UGridInventoryWidget::RefreshGrid()
 {
+	CreateGridLines();
 	RecycleSlots();
 	RefreshVisibleItems();
 }
@@ -141,9 +214,70 @@ void UGridInventoryWidget::ClearAllHighlights()
 
 // Default implementations
 void UGridInventoryWidget::OnItemClicked_Implementation(const FInventoryItemInstance& Item, int32 SlotX, int32 SlotY) {}
-void UGridInventoryWidget::OnItemRightClicked_Implementation(const FInventoryItemInstance& Item, int32 SlotX, int32 SlotY) {}
-void UGridInventoryWidget::OnItemHovered_Implementation(const FInventoryItemInstance& Item, int32 SlotX, int32 SlotY) {}
-void UGridInventoryWidget::OnItemUnhovered_Implementation() {}
+
+void UGridInventoryWidget::OnItemRightClicked_Implementation(const FInventoryItemInstance& Item, int32 SlotX, int32 SlotY)
+{
+	CloseContextMenu();
+
+	// Create fresh each time — WidgetTree::RootWidget can't be safely reassigned
+	// without orphaning old Slate widgets. For a user-triggered action (right-click)
+	// the allocation overhead is negligible.
+	ActiveContextMenu = CreateWidget<UInventoryContextMenuWidget>(GetOwningPlayer());
+	if (ActiveContextMenu)
+	{
+		ActiveContextMenu->InitMenu(Item, InventoryComponent);
+		ActiveContextMenu->AddToViewport(100);
+
+		APlayerController* PC = GetOwningPlayer();
+		if (PC)
+		{
+			float MX, MY;
+			PC->GetMousePosition(MX, MY);
+			ActiveContextMenu->SetPositionInViewport(FVector2D(MX, MY));
+		}
+	}
+}
+
+void UGridInventoryWidget::OnItemHovered_Implementation(const FInventoryItemInstance& Item, int32 SlotX, int32 SlotY)
+{
+	if (!Item.ItemDef) return;
+
+	// Build tooltip text from item properties
+	FString Tip = Item.GetDisplayName().ToString();
+	Tip += TEXT("\n");
+
+	if (!Item.ItemDef->ItemType.IsNone())
+	{
+		Tip += FString::Printf(TEXT("Typ: %s\n"), *Item.ItemDef->ItemType.ToString());
+	}
+
+	if (!Item.ItemDef->Description.IsEmpty())
+	{
+		Tip += Item.ItemDef->Description.ToString();
+		Tip += TEXT("\n");
+	}
+
+	// Effects
+	TArray<FItemEffectValue> AllEffects = Item.GetAllEffectValues();
+	for (const FItemEffectValue& Eff : AllEffects)
+	{
+		Tip += FString::Printf(TEXT("%s: %.0f\n"), *Eff.EffectID.ToString(), Eff.Value);
+	}
+
+	// Weight + Stack
+	Tip += FString::Printf(TEXT("Gewicht: %.1f"), Item.GetOwnWeight());
+	if (Item.ItemDef->bCanStack && Item.StackCount > 1)
+	{
+		Tip += FString::Printf(TEXT("  [%d/%d]"), Item.StackCount, Item.ItemDef->MaxStackSize);
+	}
+
+	SetToolTipText(FText::FromString(Tip));
+}
+
+void UGridInventoryWidget::OnItemUnhovered_Implementation()
+{
+	SetToolTipText(FText::GetEmpty());
+}
 
 UWidget* UGridInventoryWidget::CreateItemVisual_Implementation(const FInventoryItemInstance& Item)
 {
@@ -153,13 +287,22 @@ UWidget* UGridInventoryWidget::CreateItemVisual_Implementation(const FInventoryI
 
 	UImage* IconImage = WidgetTree->ConstructWidget<UImage>();
 
-	// Load icon from soft reference
+	// Use cached icon (preloaded asynchronously), sync fallback if not ready
 	if (!Item.ItemDef->Icon.IsNull())
 	{
-		UTexture2D* LoadedIcon = Item.ItemDef->Icon.LoadSynchronous();
-		if (LoadedIcon)
+		UTexture2D* CachedTex = GetCachedIcon(Item.ItemDef->Icon);
+		if (!CachedTex)
 		{
-			IconImage->SetBrushFromTexture(LoadedIcon);
+			// Sync fallback — ensures icons always display on first frame
+			CachedTex = Item.ItemDef->Icon.LoadSynchronous();
+			if (CachedTex)
+			{
+				IconCache.Add(Item.ItemDef->Icon.ToSoftObjectPath(), CachedTex);
+			}
+		}
+		if (CachedTex)
+		{
+			IconImage->SetBrushFromTexture(CachedTex);
 		}
 	}
 
@@ -216,23 +359,41 @@ void UGridInventoryWidget::SetupHitTestConfiguration()
 {
 	if (!WidgetTree) return;
 
+	int32 ConfiguredCount = 0;
+
 	// Set all existing child widgets (SizeBox, Border, GridCanvas etc.) to
 	// SelfHitTestInvisible — they remain visible but don't intercept mouse events.
 	// This ensures all events bubble up to GridInventoryWidget::NativeOnMouseButtonDown.
-	WidgetTree->ForEachWidget([this](UWidget* Widget)
+	WidgetTree->ForEachWidget([this, &ConfiguredCount](UWidget* Widget)
 	{
 		if (Widget && Widget != this)
 		{
 			Widget->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+			ConfiguredCount++;
+			UE_LOG(LogTemp, Log, TEXT("[GridInventory] SetupHitTest: '%s' → SelfHitTestInvisible"),
+				*Widget->GetName());
 		}
 	});
+
+	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SetupHitTestConfiguration — %d child widgets configured"), ConfiguredCount);
 }
 
 FReply UGridInventoryWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
+	// Close any open context menu or split slider on left-click
+	if (InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+	{
+		CloseContextMenu();
+		CloseSplitSlider();
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] MouseDown — InventoryComponent=%s, GridCanvas=%s"),
+		InventoryComponent ? TEXT("OK") : TEXT("NULL"),
+		GridCanvas ? TEXT("OK") : TEXT("NULL"));
+
 	if (!InventoryComponent || !GridCanvas)
 	{
-		return FReply::Unhandled();
+		return FReply::Handled();
 	}
 
 	const FIntPoint Cell = ScreenToCell(InMouseEvent.GetScreenSpacePosition());
@@ -252,9 +413,14 @@ FReply UGridInventoryWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry
 	{
 		if (Item.IsValid())
 		{
+			const bool bCtrl = InMouseEvent.IsControlDown();
+			const bool bAlt = InMouseEvent.IsAltDown();
+
 			// Store drag info for NativeOnDragDetected
 			PendingDragCell = Cell;
 			PendingDragItemID = Item.UniqueID;
+			bPendingDragCtrl = bCtrl;
+			bPendingDragAlt = bAlt;
 			OnItemClicked(Item, CellX, CellY);
 
 			// UE 4.27: use DetectDrag instead of CaptureMouse
@@ -342,21 +508,91 @@ void UGridInventoryWidget::NativeOnDragDetected(const FGeometry& InGeometry, con
 	UInventoryDragDropOperation* DragOp = NewObject<UInventoryDragDropOperation>();
 	DragOp->DraggedItem = Item;
 	DragOp->SourceInventory = InventoryComponent;
+	DragOp->SourceWidget = this;
 	DragOp->bDragRotated = false;
+	DragOp->bAltSplitDrag = false;
 	DragOp->GrabOffset = PendingDragCell - Item.GridPosition;
-	DragOp->DragCount = 0; // entire stack
 
-	// Create drag visual
-	UWidget* Visual = CreateItemVisual(Item);
-	if (Visual)
+	// Alt+drag: pick up full stack, split decision happens on drop
+	if (bPendingDragAlt && Item.ItemDef->bCanStack && Item.StackCount > 1)
 	{
-		DragOp->DefaultDragVisual = Visual;
-		DragOp->Pivot = EDragPivot::MouseDown;
+		DragOp->DragCount = 0;
+		DragOp->bAltSplitDrag = true;
+	}
+	// Stack-splitting logic:
+	// - PendingSplitCount > 0: from previous slider
+	// - Ctrl: entire stack
+	// - Default: pick up 1 from stackable items
+	else if (PendingSplitCount > 0 && PendingSplitCount < Item.StackCount)
+	{
+		DragOp->DragCount = PendingSplitCount;
+		PendingSplitCount = 0;
+	}
+	else if (Item.ItemDef->bCanStack && Item.StackCount > 1 && !bPendingDragCtrl)
+	{
+		DragOp->DragCount = 1;
+	}
+	else
+	{
+		DragOp->DragCount = 0; // 0 = entire stack
+	}
+	bPendingDragAlt = false;
+
+	// Create drag visual with correct stack count
+	FInventoryItemInstance VisualItem = Item;
+	if (DragOp->DragCount > 0)
+	{
+		VisualItem.StackCount = DragOp->DragCount;
 	}
 
-	// Remove the item from its current position so the grid shows it as free
-	// (if the drop fails, NativeOnDragCancelled should restore it)
+	// Don't use DefaultDragVisual — UE4 has a known engine bug where it
+	// animates the visual 0.15s from top-left to the pivot/offset position.
+	// Instead: add visual directly to GridCanvas and position it manually.
+	UWidget* Visual = CreateItemVisual(VisualItem);
+	if (Visual)
+	{
+		const FIntPoint EffSize = DragOp->GetEffectiveDragSize();
+		const float PixelW = EffSize.X * CellSize;
+		const float PixelH = EffSize.Y * CellSize;
+
+		USizeBox* DragSizeBox = WidgetTree->ConstructWidget<USizeBox>();
+		DragSizeBox->SetWidthOverride(PixelW);
+		DragSizeBox->SetHeightOverride(PixelH);
+		DragSizeBox->AddChild(Visual);
+		DragSizeBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+		DragSizeBox->SetRenderOpacity(0.8f);
+
+		GridCanvas->AddChild(DragSizeBox);
+		if (UCanvasPanelSlot* CS = Cast<UCanvasPanelSlot>(DragSizeBox->Slot))
+		{
+			CS->SetAutoSize(true);
+			CS->SetZOrder(100);
+
+			// Position at mouse cursor, offset by grab point within the item
+			const FGeometry CanvasGeo = GridCanvas->GetCachedGeometry();
+			const FVector2D LocalPos = CanvasGeo.AbsoluteToLocal(InMouseEvent.GetScreenSpacePosition());
+			const float VisX = LocalPos.X - (DragOp->GrabOffset.X + 0.5f) * CellSize;
+			const float VisY = LocalPos.Y - (DragOp->GrabOffset.Y + 0.5f) * CellSize;
+			CS->SetPosition(FVector2D(VisX, VisY));
+		}
+		ActiveDragVisual = DragSizeBox;
+
+		UE_LOG(LogTemp, Log, TEXT("[GridInventory] DragVisual created at grid (%d,%d), size (%.0fx%.0f)"),
+			Item.GridPosition.X, Item.GridPosition.Y, PixelW, PixelH);
+	}
+
 	OutOperation = DragOp;
+
+	// Hide original visual during drag (whole-stack moves only)
+	if (DragOp->DragCount == 0)
+	{
+		FItemVisualEntry* Entry = ActiveItemVisuals.Find(DragOp->DraggedItem.UniqueID);
+		if (Entry && Entry->Visual)
+		{
+			Entry->Visual->SetVisibility(ESlateVisibility::Collapsed);
+			DragHiddenItemID = DragOp->DraggedItem.UniqueID;
+		}
+	}
 
 	PendingDragItemID.Invalidate();
 }
@@ -372,10 +608,64 @@ bool UGridInventoryWidget::NativeOnDragOver(const FGeometry& InGeometry, const F
 	const FIntPoint DropPos = Cell - DragOp->GrabOffset;
 	const FIntPoint Size = DragOp->GetEffectiveDragSize();
 	const bool bEffRot = DragOp->DraggedItem.bIsRotated != DragOp->bDragRotated;
-	const bool bCanPlace = InventoryComponent->CanPlaceAt(DragOp->DraggedItem.ItemDef, DropPos, bEffRot);
 
-	HighlightArea(DropPos, Size, bCanPlace);
+	// Update drag visual position to follow mouse (pixel-precise on source widget)
+	if (DragOp->SourceWidget)
+	{
+		UGridInventoryWidget* SrcWidget = DragOp->SourceWidget;
+		if (SrcWidget->ActiveDragVisual && SrcWidget->GridCanvas)
+		{
+			const FGeometry SrcGeo = SrcWidget->GridCanvas->GetCachedGeometry();
+			const FVector2D LocalPos = SrcGeo.AbsoluteToLocal(InDragDropEvent.GetScreenSpacePosition());
+			const float VisX = LocalPos.X - (DragOp->GrabOffset.X + 0.5f) * SrcWidget->CellSize;
+			const float VisY = LocalPos.Y - (DragOp->GrabOffset.Y + 0.5f) * SrcWidget->CellSize;
+			if (UCanvasPanelSlot* CS = Cast<UCanvasPanelSlot>(SrcWidget->ActiveDragVisual->Slot))
+			{
+				CS->SetPosition(FVector2D(VisX, VisY));
+			}
+		}
+	}
 
+	// Use CanPlaceAtIgnoring for same-inventory moves so the dragged item's cells don't block placement
+	bool bCanPlace = false;
+	if (DragOp->SourceInventory == InventoryComponent && DragOp->DragCount == 0)
+	{
+		bCanPlace = InventoryComponent->CanPlaceAtIgnoring(DragOp->DraggedItem.ItemDef, DropPos, bEffRot, DragOp->DraggedItem.UniqueID);
+	}
+	else
+	{
+		bCanPlace = InventoryComponent->CanPlaceAt(DragOp->DraggedItem.ItemDef, DropPos, bEffRot);
+	}
+
+	if (bCanPlace)
+	{
+		HighlightArea(DropPos, Size, true);
+		return true;
+	}
+
+	// Check if hovering over a same-type item for stack merge or class-level merge
+	FInventoryItemInstance TargetItem = InventoryComponent->GetItemAtPosition(Cell);
+	if (TargetItem.IsValid() && TargetItem.UniqueID != DragOp->DraggedItem.UniqueID
+		&& TargetItem.ItemDef && TargetItem.ItemDef == DragOp->DraggedItem.ItemDef)
+	{
+		bool bCanMerge = false;
+		if (TargetItem.ItemDef->bCanStack && TargetItem.StackCount < TargetItem.ItemDef->MaxStackSize)
+		{
+			bCanMerge = true;
+		}
+		else if (TargetItem.ItemDef->bCanMergeUpgrade && TargetItem.CurrentClassLevel < TargetItem.ItemDef->MaxClassLevel)
+		{
+			bCanMerge = true;
+		}
+
+		if (bCanMerge)
+		{
+			HighlightArea(TargetItem.GridPosition, TargetItem.GetEffectiveSize(), true);
+			return true;
+		}
+	}
+
+	HighlightArea(DropPos, Size, false);
 	return true;
 }
 
@@ -385,12 +675,69 @@ void UGridInventoryWidget::NativeOnDragLeave(const FDragDropEvent& InDragDropEve
 	Super::NativeOnDragLeave(InDragDropEvent, InOperation);
 }
 
+void UGridInventoryWidget::NativeOnDragCancelled(const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation)
+{
+	ClearAllHighlights();
+	RestoreDragHiddenVisual();
+
+	// Remove drag visual from source widget
+	UInventoryDragDropOperation* DragOp = Cast<UInventoryDragDropOperation>(InOperation);
+	if (DragOp && DragOp->SourceWidget)
+	{
+		DragOp->SourceWidget->RemoveDragVisual();
+	}
+	else
+	{
+		RemoveDragVisual();
+	}
+
+	Super::NativeOnDragCancelled(InDragDropEvent, InOperation);
+}
+
+void UGridInventoryWidget::RestoreDragHiddenVisual()
+{
+	if (DragHiddenItemID.IsValid())
+	{
+		FItemVisualEntry* Entry = ActiveItemVisuals.Find(DragHiddenItemID);
+		if (Entry && Entry->Visual)
+		{
+			Entry->Visual->SetVisibility(ESlateVisibility::HitTestInvisible);
+		}
+		DragHiddenItemID.Invalidate();
+	}
+}
+
+void UGridInventoryWidget::ClearDragHiddenVisual()
+{
+	DragHiddenItemID.Invalidate();
+}
+
+void UGridInventoryWidget::RemoveDragVisual()
+{
+	if (ActiveDragVisual)
+	{
+		ActiveDragVisual->RemoveFromParent();
+		ActiveDragVisual = nullptr;
+	}
+}
+
 bool UGridInventoryWidget::NativeOnDrop(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation)
 {
 	ClearAllHighlights();
 
 	UInventoryDragDropOperation* DragOp = Cast<UInventoryDragDropOperation>(InOperation);
-	if (!DragOp || !InventoryComponent || !GridCanvas) return false;
+	if (!DragOp || !InventoryComponent || !GridCanvas)
+	{
+		RestoreDragHiddenVisual();
+		RemoveDragVisual();
+		return false;
+	}
+
+	// Remove the manually-positioned drag visual
+	if (DragOp->SourceWidget)
+	{
+		DragOp->SourceWidget->RemoveDragVisual();
+	}
 
 	const FIntPoint Cell = ScreenToCell(InDragDropEvent.GetScreenSpacePosition());
 	const FIntPoint DropPos = Cell - DragOp->GrabOffset;
@@ -399,18 +746,148 @@ bool UGridInventoryWidget::NativeOnDrop(const FGeometry& InGeometry, const FDrag
 	UE_LOG(LogTemp, Warning, TEXT("[GridInventory] Drop at Cell (%d, %d) → DropPos (%d, %d)"),
 		Cell.X, Cell.Y, DropPos.X, DropPos.Y);
 
-	if (DragOp->SourceInventory == InventoryComponent)
+	// Alt+Split workflow: show slider at drop position
+	if (DragOp->bAltSplitDrag && DragOp->DraggedItem.ItemDef
+		&& DragOp->DraggedItem.ItemDef->bCanStack && DragOp->DraggedItem.StackCount > 1)
 	{
-		return InventoryComponent->MoveItem(DragOp->DraggedItem.UniqueID, DropPos, bEffRot);
+		bool bCanPlace = InventoryComponent->CanPlaceAt(DragOp->DraggedItem.ItemDef, DropPos, bEffRot);
+		if (!bCanPlace)
+		{
+			RestoreDragHiddenVisual();
+			return false;
+		}
+
+		// Stack=2: only one possible split (1/1), skip slider
+		if (DragOp->DraggedItem.StackCount == 2)
+		{
+			DragHiddenItemID.Invalidate();
+			if (DragOp->SourceWidget && DragOp->SourceWidget != this)
+			{
+				DragOp->SourceWidget->ClearDragHiddenVisual();
+			}
+			if (DragOp->SourceInventory == InventoryComponent)
+			{
+				return InventoryComponent->SplitStack(DragOp->DraggedItem.UniqueID, 1, DropPos, bEffRot);
+			}
+			else if (DragOp->SourceInventory)
+			{
+				return DragOp->SourceInventory->TransferItemTo(
+					DragOp->DraggedItem.UniqueID, InventoryComponent, DropPos, bEffRot, 1);
+			}
+			return false;
+		}
+
+		// Show split slider at drop position
+		RestoreDragHiddenVisual();
+		if (DragOp->SourceWidget && DragOp->SourceWidget != this)
+		{
+			DragOp->SourceWidget->RestoreDragHiddenVisual();
+		}
+		// IMPORTANT: ShowSplitSlider calls CloseSplitSlider() internally,
+		// which resets bPendingDropSplit. Set state AFTER ShowSplitSlider.
+		ShowSplitSlider(DragOp->DraggedItem, DropPos);
+		bPendingDropSplit = true;
+		DropSplitItemID = DragOp->DraggedItem.UniqueID;
+		DropSplitPosition = DropPos;
+		DropSplitRotated = bEffRot;
+		DropSplitSourceInventory = DragOp->SourceInventory;
+		return true;
 	}
 
-	if (DragOp->SourceInventory)
+	// Check for stack merge or class-level merge at drop position
+	FInventoryItemInstance TargetItem = InventoryComponent->GetItemAtPosition(Cell);
+	if (TargetItem.IsValid() && TargetItem.UniqueID != DragOp->DraggedItem.UniqueID
+		&& TargetItem.ItemDef && TargetItem.ItemDef == DragOp->DraggedItem.ItemDef)
 	{
-		return DragOp->SourceInventory->TransferItemTo(
+		// Stack merge (stackable items like herbs)
+		if (TargetItem.ItemDef->bCanStack && TargetItem.StackCount < TargetItem.ItemDef->MaxStackSize)
+		{
+			int32 Moved = 0;
+			if (DragOp->SourceInventory == InventoryComponent)
+			{
+				Moved = InventoryComponent->StackOnto(DragOp->DraggedItem.UniqueID, TargetItem.UniqueID, DragOp->DragCount);
+			}
+			else if (DragOp->SourceInventory)
+			{
+				Moved = InventoryComponent->StackOntoFrom(TargetItem.UniqueID, DragOp->SourceInventory, DragOp->DraggedItem.UniqueID, DragOp->DragCount);
+			}
+
+			if (Moved > 0)
+			{
+				UE_LOG(LogTemp, Log, TEXT("[GridInventory] StackMerge: moved %d onto target at (%d,%d)"), Moved, TargetItem.GridPosition.X, TargetItem.GridPosition.Y);
+				DragHiddenItemID.Invalidate();
+				if (DragOp->SourceWidget && DragOp->SourceWidget != this)
+				{
+					DragOp->SourceWidget->ClearDragHiddenVisual();
+				}
+				return true;
+			}
+			RestoreDragHiddenVisual();
+			return false;
+		}
+
+		// Class-level merge (non-stackable upgradeable items like swords)
+		if (TargetItem.ItemDef->bCanMergeUpgrade && TargetItem.CurrentClassLevel < TargetItem.ItemDef->MaxClassLevel)
+		{
+			bool bMerged = false;
+			if (DragOp->SourceInventory == InventoryComponent)
+			{
+				bMerged = InventoryComponent->MergeItems(TargetItem.UniqueID, DragOp->DraggedItem.UniqueID);
+			}
+			// Cross-inventory merge: not yet supported (both items must be in same inventory)
+
+			if (bMerged)
+			{
+				UE_LOG(LogTemp, Log, TEXT("[GridInventory] MergeUpgrade: class level now %d"), TargetItem.CurrentClassLevel + 1);
+				DragHiddenItemID.Invalidate();
+				if (DragOp->SourceWidget && DragOp->SourceWidget != this)
+				{
+					DragOp->SourceWidget->ClearDragHiddenVisual();
+				}
+				return true;
+			}
+			RestoreDragHiddenVisual();
+			return false;
+		}
+	}
+
+	// Normal move / transfer
+	bool bSuccess = false;
+
+	if (DragOp->SourceInventory == InventoryComponent)
+	{
+		// Partial stack: split instead of move
+		if (DragOp->DragCount > 0 && DragOp->DragCount < DragOp->DraggedItem.StackCount)
+		{
+			bSuccess = InventoryComponent->SplitStack(DragOp->DraggedItem.UniqueID, DragOp->DragCount, DropPos, bEffRot);
+		}
+		else
+		{
+			bSuccess = InventoryComponent->MoveItem(DragOp->DraggedItem.UniqueID, DropPos, bEffRot);
+		}
+	}
+	else if (DragOp->SourceInventory)
+	{
+		bSuccess = DragOp->SourceInventory->TransferItemTo(
 			DragOp->DraggedItem.UniqueID, InventoryComponent, DropPos, bEffRot, DragOp->DragCount);
 	}
 
-	return false;
+	if (bSuccess)
+	{
+		// Clear hidden state — OnInventoryChanged will rebuild visuals
+		DragHiddenItemID.Invalidate();
+		if (DragOp->SourceWidget && DragOp->SourceWidget != this)
+		{
+			DragOp->SourceWidget->ClearDragHiddenVisual();
+		}
+	}
+	else
+	{
+		// Drop failed — restore original visual
+		RestoreDragHiddenVisual();
+	}
+
+	return bSuccess;
 }
 
 // ============================================================================
@@ -429,9 +906,10 @@ UInventorySlotWidget* UGridInventoryWidget::AcquireSlot()
 	}
 	else
 	{
-		// Create new
-		InvSlot = SlotWidgetClass
-			? CreateWidget<UInventorySlotWidget>(this, SlotWidgetClass)
+		// Create new — use resolved soft class (avoids hard ref)
+		UClass* SlotClass = GetSlotWidgetClass();
+		InvSlot = SlotClass
+			? CreateWidget<UInventorySlotWidget>(this, SlotClass)
 			: CreateWidget<UInventorySlotWidget>(this);
 
 		if (InvSlot && GridCanvas)
@@ -519,11 +997,11 @@ void UGridInventoryWidget::RecycleSlots()
 
 void UGridInventoryWidget::RefreshVisibleItems()
 {
-	ClearItemVisuals();
-
 	if (!InventoryComponent || !GridCanvas) return;
 
-	// Only create visuals for items that overlap the visible area
+	// Build set of currently visible items
+	TSet<FGuid> VisibleItemIDs;
+
 	for (const FInventoryItemInstance& Item : InventoryComponent->GetAllItems())
 	{
 		if (!Item.IsValid()) continue;
@@ -535,13 +1013,39 @@ void UGridInventoryWidget::RefreshVisibleItems()
 		if (Pos.X + Size.X <= VisibleMin.X || Pos.X >= VisibleMax.X) continue;
 		if (Pos.Y + Size.Y <= VisibleMin.Y || Pos.Y >= VisibleMax.Y) continue;
 
+		VisibleItemIDs.Add(Item.UniqueID);
+
+		// Check if visual already exists and is up-to-date
+		FItemVisualEntry* Existing = ActiveItemVisuals.Find(Item.UniqueID);
+		if (Existing)
+		{
+			// Check if icon became available since visual was created
+			const bool bIconNowAvailable = (Item.ItemDef && !Item.ItemDef->Icon.IsNull())
+				? (GetCachedIcon(Item.ItemDef->Icon) != nullptr) : true;
+
+			// Only rebuild if something changed (position, rotation, stack, class level, icon)
+			if (Existing->Position == Pos && Existing->bRotated == Item.bIsRotated
+				&& Existing->StackCount == Item.StackCount && Existing->ClassLevel == Item.CurrentClassLevel
+				&& (Existing->bIconLoaded || !bIconNowAvailable))
+			{
+				continue; // No change — skip
+			}
+
+			// Changed — remove old visual
+			if (Existing->Visual)
+			{
+				Existing->Visual->RemoveFromParent();
+			}
+			ActiveItemVisuals.Remove(Item.UniqueID);
+		}
+
+		// Create new visual
 		UWidget* Visual = CreateItemVisual(Item);
 		if (!Visual) continue;
 
 		USizeBox* SB = WidgetTree->ConstructWidget<USizeBox>();
 		SB->SetWidthOverride(Size.X * CellSize);
 		SB->SetHeightOverride(Size.Y * CellSize);
-		// Item visuals must not intercept mouse events
 		SB->SetVisibility(ESlateVisibility::HitTestInvisible);
 		SB->AddChild(Visual);
 
@@ -553,21 +1057,262 @@ void UGridInventoryWidget::RefreshVisibleItems()
 			CS->SetPosition(FVector2D(Pos.X * CellSize, Pos.Y * CellSize));
 		}
 
-		ActiveItemVisuals.Add(SB);
+		FItemVisualEntry Entry;
+		Entry.UniqueID = Item.UniqueID;
+		Entry.Position = Pos;
+		Entry.Size = Size;
+		Entry.StackCount = Item.StackCount;
+		Entry.ClassLevel = Item.CurrentClassLevel;
+		Entry.bRotated = Item.bIsRotated;
+		Entry.bIconLoaded = (Item.ItemDef && !Item.ItemDef->Icon.IsNull())
+			? (GetCachedIcon(Item.ItemDef->Icon) != nullptr) : true;
+		Entry.Visual = SB;
+		ActiveItemVisuals.Add(Item.UniqueID, Entry);
+
+		// Keep item hidden if it's being dragged
+		if (Item.UniqueID == DragHiddenItemID && Entry.Visual)
+		{
+			Entry.Visual->SetVisibility(ESlateVisibility::Collapsed);
+		}
+	}
+
+	// Remove visuals for items that are no longer visible or no longer exist
+	TArray<FGuid> ToRemove;
+	for (auto& Pair : ActiveItemVisuals)
+	{
+		if (!VisibleItemIDs.Contains(Pair.Key))
+		{
+			ToRemove.Add(Pair.Key);
+		}
+	}
+	for (const FGuid& ID : ToRemove)
+	{
+		FItemVisualEntry& Entry = ActiveItemVisuals[ID];
+		if (Entry.Visual)
+		{
+			Entry.Visual->RemoveFromParent();
+		}
+		ActiveItemVisuals.Remove(ID);
 	}
 }
 
 void UGridInventoryWidget::ClearItemVisuals()
 {
-	for (UWidget* W : ActiveItemVisuals)
+	for (auto& Pair : ActiveItemVisuals)
 	{
-		if (W) W->RemoveFromParent();
+		if (Pair.Value.Visual) Pair.Value.Visual->RemoveFromParent();
 	}
 	ActiveItemVisuals.Empty();
 }
 
+void UGridInventoryWidget::CreateGridLines()
+{
+	if (!bShowGridLines || !InventoryComponent || !GridCanvas)
+	{
+		ClearGridLines();
+		return;
+	}
+
+	const int32 GW = InventoryComponent->GridWidth;
+	const int32 GH = InventoryComponent->GridHeight;
+
+	// Skip rebuild if dimensions haven't changed — avoids destroying/recreating 160+ Image widgets
+	if (GW == CachedGridLineWidth && GH == CachedGridLineHeight && GridLineWidgets.Num() > 0)
+	{
+		return;
+	}
+
+	ClearGridLines();
+	CachedGridLineWidth = GW;
+	CachedGridLineHeight = GH;
+	const float TotalW = GW * CellSize;
+	const float TotalH = GH * CellSize;
+
+	// Vertical lines
+	for (int32 X = 0; X <= GW; ++X)
+	{
+		UImage* Line = WidgetTree->ConstructWidget<UImage>();
+		Line->SetBrushSize(FVector2D(GridLineThickness, TotalH));
+		Line->SetBrushTintColor(FSlateColor(GridLineColor));
+		Line->SetVisibility(ESlateVisibility::HitTestInvisible);
+		GridCanvas->AddChild(Line);
+
+		if (UCanvasPanelSlot* CS = Cast<UCanvasPanelSlot>(Line->Slot))
+		{
+			CS->SetAutoSize(true);
+			CS->SetPosition(FVector2D(X * CellSize - GridLineThickness * 0.5f, 0.0f));
+		}
+
+		GridLineWidgets.Add(Line);
+	}
+
+	// Horizontal lines
+	for (int32 Y = 0; Y <= GH; ++Y)
+	{
+		UImage* Line = WidgetTree->ConstructWidget<UImage>();
+		Line->SetBrushSize(FVector2D(TotalW, GridLineThickness));
+		Line->SetBrushTintColor(FSlateColor(GridLineColor));
+		Line->SetVisibility(ESlateVisibility::HitTestInvisible);
+		GridCanvas->AddChild(Line);
+
+		if (UCanvasPanelSlot* CS = Cast<UCanvasPanelSlot>(Line->Slot))
+		{
+			CS->SetAutoSize(true);
+			CS->SetPosition(FVector2D(0.0f, Y * CellSize - GridLineThickness * 0.5f));
+		}
+
+		GridLineWidgets.Add(Line);
+	}
+}
+
+void UGridInventoryWidget::ClearGridLines()
+{
+	for (UWidget* W : GridLineWidgets)
+	{
+		if (W) W->RemoveFromParent();
+	}
+	GridLineWidgets.Empty();
+}
+
+void UGridInventoryWidget::CloseContextMenu()
+{
+	if (ActiveContextMenu)
+	{
+		ActiveContextMenu->RemoveFromParent();
+		ActiveContextMenu = nullptr;
+	}
+}
+
+// ============================================================================
+// Async Icon Preloading
+// ============================================================================
+
+void UGridInventoryWidget::PreloadVisibleIcons()
+{
+	if (!InventoryComponent) return;
+
+	TArray<FSoftObjectPath> PathsToLoad;
+
+	for (const FInventoryItemInstance& Item : InventoryComponent->GetAllItems())
+	{
+		if (!Item.IsValid() || !Item.ItemDef || Item.ItemDef->Icon.IsNull()) continue;
+
+		// Only preload icons for items overlapping the visible viewport
+		// This avoids loading textures for hundreds of off-screen items
+		const FIntPoint Pos = Item.GridPosition;
+		const FIntPoint Size = Item.GetEffectiveSize();
+		if (Pos.X + Size.X <= VisibleMin.X || Pos.X >= VisibleMax.X) continue;
+		if (Pos.Y + Size.Y <= VisibleMin.Y || Pos.Y >= VisibleMax.Y) continue;
+
+		const FSoftObjectPath Path = Item.ItemDef->Icon.ToSoftObjectPath();
+
+		// Skip already cached — O(1) hash lookup
+		if (IconCache.Contains(Path)) continue;
+
+		// Check if already loaded in memory (from another source)
+		UTexture2D* AlreadyLoaded = Item.ItemDef->Icon.Get();
+		if (AlreadyLoaded)
+		{
+			IconCache.Add(Path, AlreadyLoaded);
+			continue;
+		}
+
+		PathsToLoad.AddUnique(Path);
+	}
+
+	if (PathsToLoad.Num() == 0) return;
+
+	// Cancel previous in-flight load if any
+	if (IconStreamHandle.IsValid() && IconStreamHandle->IsActive())
+	{
+		IconStreamHandle->CancelHandle();
+	}
+
+	TWeakObjectPtr<UGridInventoryWidget> WeakThis(this);
+
+	FStreamableManager& StreamableManager = UAssetManager::GetStreamableManager();
+	IconStreamHandle = StreamableManager.RequestAsyncLoad(PathsToLoad,
+		FStreamableDelegate::CreateLambda([WeakThis, PathsToLoad]()
+		{
+			if (!WeakThis.IsValid()) return;
+
+			// Cache all newly loaded textures
+			for (const FSoftObjectPath& Path : PathsToLoad)
+			{
+				UTexture2D* Loaded = Cast<UTexture2D>(Path.ResolveObject());
+				if (Loaded)
+				{
+					WeakThis->IconCache.Add(Path, Loaded);
+				}
+			}
+
+			// Trigger a visual refresh now that icons are available
+			WeakThis->RefreshVisibleItems();
+		})
+	);
+}
+
+UTexture2D* UGridInventoryWidget::GetCachedIcon(const TSoftObjectPtr<UTexture2D>& SoftIcon) const
+{
+	if (SoftIcon.IsNull()) return nullptr;
+
+	const FSoftObjectPath Path = SoftIcon.ToSoftObjectPath();
+
+	// Check cache first
+	const UTexture2D* const* Found = IconCache.Find(Path);
+	if (Found && *Found)
+	{
+		return const_cast<UTexture2D*>(*Found);
+	}
+
+	// If already loaded in memory (from another source), use it
+	UTexture2D* InMemory = SoftIcon.Get();
+	if (InMemory)
+	{
+		// Cache for future use (const_cast safe here since we're populating a mutable cache)
+		const_cast<UGridInventoryWidget*>(this)->IconCache.Add(Path, InMemory);
+		return InMemory;
+	}
+
+	return nullptr;
+}
+
+UClass* UGridInventoryWidget::GetSlotWidgetClass()
+{
+	if (ResolvedSlotWidgetClass) return ResolvedSlotWidgetClass;
+
+	if (!SlotWidgetClass.IsNull())
+	{
+		// Try to get already-loaded class first (no blocking)
+		ResolvedSlotWidgetClass = SlotWidgetClass.Get();
+		if (!ResolvedSlotWidgetClass)
+		{
+			// Synchronous load only on first access — subsequent calls use cached pointer
+			ResolvedSlotWidgetClass = SlotWidgetClass.LoadSynchronous();
+		}
+	}
+	return ResolvedSlotWidgetClass;
+}
+
 void UGridInventoryWidget::OnInventoryChanged()
 {
+	if (!InventoryComponent) return;
+
+	// Detect grid resize and rebuild everything if dimensions changed
+	if (InventoryComponent->GridWidth != CachedInventoryWidth
+		|| InventoryComponent->GridHeight != CachedInventoryHeight)
+	{
+		CachedInventoryWidth = InventoryComponent->GridWidth;
+		CachedInventoryHeight = InventoryComponent->GridHeight;
+		VisibleMax = FIntPoint(InventoryComponent->GridWidth, InventoryComponent->GridHeight);
+		ClearItemVisuals();
+		CachedGridLineWidth = 0;
+		CachedGridLineHeight = 0;
+		RefreshGrid();
+	}
+
+	// Preload icons for any new items asynchronously
+	PreloadVisibleIcons();
 	RefreshItems();
 }
 
@@ -577,4 +1322,146 @@ void UGridInventoryWidget::UnbindFromInventory()
 	{
 		InventoryComponent->OnInventoryChanged.RemoveDynamic(this, &UGridInventoryWidget::OnInventoryChanged);
 	}
+}
+
+// ============================================================================
+// Stack-Split Slider
+// ============================================================================
+
+void UGridInventoryWidget::ShowSplitSlider(const FInventoryItemInstance& Item, FIntPoint Cell)
+{
+	CloseSplitSlider();
+	if (!GridCanvas || !WidgetTree) return;
+
+	bShowingSplitSlider = true;
+	SplitSliderItemID = Item.UniqueID;
+	SplitSliderMaxCount = Item.StackCount;
+	SplitSliderCurrentCount = 1;
+	SplitSliderCell = Cell;
+
+	// Build slider UI: [count / max] [----slider----] [OK]
+	UBorder* Background = WidgetTree->ConstructWidget<UBorder>();
+	Background->SetBrushColor(FLinearColor(0.05f, 0.05f, 0.05f, 0.92f));
+	Background->SetPadding(FMargin(8.f));
+	Background->SetVisibility(ESlateVisibility::Visible);
+
+	UHorizontalBox* HBox = WidgetTree->ConstructWidget<UHorizontalBox>();
+	Background->AddChild(HBox);
+
+	// Count label
+	SplitSliderCountLabel = WidgetTree->ConstructWidget<UTextBlock>();
+	SplitSliderCountLabel->SetText(FText::Format(
+		FText::FromString(TEXT("{0}/{1}")),
+		FText::AsNumber(1), FText::AsNumber(SplitSliderMaxCount - 1)));
+	FSlateFontInfo CountFont = SplitSliderCountLabel->Font;
+	CountFont.Size = 14;
+	SplitSliderCountLabel->SetFont(CountFont);
+	SplitSliderCountLabel->SetColorAndOpacity(FSlateColor(FLinearColor::White));
+	UHorizontalBoxSlot* CountBoxSlot = HBox->AddChildToHorizontalBox(SplitSliderCountLabel);
+	CountBoxSlot->SetPadding(FMargin(0.f, 0.f, 8.f, 0.f));
+	CountBoxSlot->SetVerticalAlignment(VAlign_Center);
+
+	// Slider (UE4.27: set properties directly, not via setters)
+	USlider* SliderCtrl = WidgetTree->ConstructWidget<USlider>();
+	SliderCtrl->MinValue = 1.f;
+	SliderCtrl->MaxValue = (float)(SplitSliderMaxCount - 1);
+	SliderCtrl->StepSize = 1.f;
+	SliderCtrl->SetValue(1.f);
+	SliderCtrl->SliderBarColor = FLinearColor(0.3f, 0.3f, 0.3f, 1.f);
+	SliderCtrl->SliderHandleColor = FLinearColor(0.8f, 0.6f, 0.1f, 1.f);
+	SliderCtrl->OnValueChanged.AddDynamic(this, &UGridInventoryWidget::OnSplitSliderValueChanged);
+	UHorizontalBoxSlot* SliderBoxSlot = HBox->AddChildToHorizontalBox(SliderCtrl);
+	SliderBoxSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+	SliderBoxSlot->SetVerticalAlignment(VAlign_Center);
+
+	// OK button
+	UButton* OkButton = WidgetTree->ConstructWidget<UButton>();
+	OkButton->SetBackgroundColor(FLinearColor(0.2f, 0.5f, 0.2f, 1.f));
+	OkButton->OnClicked.AddDynamic(this, &UGridInventoryWidget::OnSplitSliderOKClicked);
+	UTextBlock* OkText = WidgetTree->ConstructWidget<UTextBlock>();
+	OkText->SetText(FText::FromString(TEXT("OK")));
+	FSlateFontInfo OkFont = OkText->Font;
+	OkFont.Size = 14;
+	OkText->SetFont(OkFont);
+	OkButton->AddChild(OkText);
+	UHorizontalBoxSlot* OkBoxSlot = HBox->AddChildToHorizontalBox(OkButton);
+	OkBoxSlot->SetVerticalAlignment(VAlign_Center);
+	OkBoxSlot->SetSize(FSlateChildSize(ESlateSizeRule::Automatic));
+	OkBoxSlot->SetPadding(FMargin(8.f, 0.f, 0.f, 0.f));
+
+	// Position above the clicked cell
+	GridCanvas->AddChild(Background);
+	if (UCanvasPanelSlot* CS = Cast<UCanvasPanelSlot>(Background->Slot))
+	{
+		CS->SetAutoSize(false);
+		CS->SetPosition(FVector2D(Cell.X * CellSize, (Cell.Y - 1) * CellSize));
+		CS->SetSize(FVector2D(FMath::Max(CellSize * 4.0f, 256.0f), FMath::Max(CellSize * 0.75f, 48.0f)));
+	}
+
+	SplitSliderWidget = Background;
+}
+
+void UGridInventoryWidget::CloseSplitSlider()
+{
+	if (bShowingSplitSlider && SplitSliderWidget)
+	{
+		SplitSliderWidget->RemoveFromParent();
+		SplitSliderWidget = nullptr;
+		SplitSliderCountLabel = nullptr;
+	}
+	bShowingSplitSlider = false;
+	SplitSliderItemID.Invalidate();
+	bPendingDropSplit = false;
+	DropSplitItemID.Invalidate();
+}
+
+void UGridInventoryWidget::OnSplitSliderValueChanged(float Value)
+{
+	SplitSliderCurrentCount = FMath::RoundToInt(Value);
+	if (SplitSliderCountLabel)
+	{
+		SplitSliderCountLabel->SetText(FText::Format(
+			FText::FromString(TEXT("{0}/{1}")),
+			FText::AsNumber(SplitSliderCurrentCount),
+			FText::AsNumber(SplitSliderMaxCount - 1)));
+	}
+}
+
+void UGridInventoryWidget::OnSplitSliderOKClicked()
+{
+	OnSplitSliderConfirmed(SplitSliderCurrentCount);
+}
+
+void UGridInventoryWidget::OnSplitSliderConfirmed(int32 Count)
+{
+	if (Count <= 0)
+	{
+		CloseSplitSlider();
+		return;
+	}
+
+	// New workflow: directly execute split at the drop position
+	if (bPendingDropSplit && DropSplitSourceInventory && DropSplitItemID.IsValid())
+	{
+		bool bSplitOK = false;
+		if (DropSplitSourceInventory == InventoryComponent)
+		{
+			bSplitOK = InventoryComponent->SplitStack(DropSplitItemID, Count, DropSplitPosition, DropSplitRotated);
+		}
+		else
+		{
+			bSplitOK = DropSplitSourceInventory->TransferItemTo(DropSplitItemID, InventoryComponent, DropSplitPosition, DropSplitRotated, Count);
+		}
+		UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SplitSlider: split %d at (%d,%d) → %s"),
+			Count, DropSplitPosition.X, DropSplitPosition.Y, bSplitOK ? TEXT("OK") : TEXT("FAILED"));
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[GridInventory] SplitSlider: state invalid — bPendingDropSplit=%d, SourceInv=%p, ItemID=%s"),
+			bPendingDropSplit ? 1 : 0, DropSplitSourceInventory, *DropSplitItemID.ToString());
+	}
+
+	bPendingDropSplit = false;
+	DropSplitItemID.Invalidate();
+	CloseSplitSlider();
 }

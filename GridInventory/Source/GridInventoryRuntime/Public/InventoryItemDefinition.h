@@ -6,6 +6,7 @@
 #include "Engine/DataAsset.h"
 #include "ItemEffectValue.h"
 #include "ItemClassMultiplier.h"
+#include "ItemRequirement.h"
 #include "IngredientSpawnData.h"
 #include "InventoryItemDefinition.generated.h"
 
@@ -67,6 +68,40 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weight", meta = (ClampMin = "0.0"))
 	float Weight;
+
+	// ========================
+	// Trade / Currency
+	// ========================
+
+	/** Base gold value of this item (used for buying/selling with NPCs) */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Trade", meta = (ClampMin = "0"))
+	int32 BaseValue;
+
+	/**
+	 * If true, this item is currency (e.g. gold coins, gems).
+	 * Currency items are NOT placed in the grid — instead, their BaseValue * Count
+	 * is added directly to the inventory's gold. The item disappears after pickup.
+	 *
+	 * Example: DA_Goldmuenze with BaseValue 1, bIsCurrency true
+	 * -> picking up 10 = +10 gold, item never enters inventory grid.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Trade")
+	bool bIsCurrency;
+
+	// ========================
+	// Requirements
+	// ========================
+
+	/**
+	 * Requirements the player must meet to equip or use this item.
+	 * Each entry is a stat name + minimum value.
+	 * The EquipmentComponent checks these against its PlayerStats map.
+	 *
+	 * Examples:
+	 *   "Level" >= 8, "Staerke" >= 10, "Geschicklichkeit" >= 5
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Requirements")
+	TArray<FItemRequirement> EquipRequirements;
 
 	// ========================
 	// Effect Values

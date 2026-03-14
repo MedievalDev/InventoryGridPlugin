@@ -5,12 +5,16 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "InventoryItemInstance.h"
+#include "Engine/StreamableManager.h"
 #include "GridInventoryWidget.generated.h"
 
 class UGridInventoryComponent;
 class UInventorySlotWidget;
+class UInventoryContextMenuWidget;
 class UCanvasPanel;
 class USizeBox;
+class UTexture2D;
+class UTextBlock;
 
 /**
  * VIRTUALIZED inventory grid widget. Optimized for large grids (60x80+).
@@ -31,12 +35,29 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid Inventory|Config")
 	float CellSize;
 
+	/** Soft class reference — avoids hard ref to Blueprint package at load time */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid Inventory|Config")
-	TSubclassOf<UInventorySlotWidget> SlotWidgetClass;
+	TSoftClassPtr<UInventorySlotWidget> SlotWidgetClass;
 
 	/** Extra rows/columns rendered outside viewport as buffer */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid Inventory|Config", meta = (ClampMin = "1", ClampMax = "10"))
 	int32 ViewportBuffer;
+
+	// ========================
+	// Grid Lines
+	// ========================
+
+	/** Whether to draw grid lines between cells */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid Inventory|Config")
+	bool bShowGridLines;
+
+	/** Thickness of grid lines in pixels */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid Inventory|Config", meta = (ClampMin = "0.5", ClampMax = "4.0"))
+	float GridLineThickness;
+
+	/** Color of grid lines */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid Inventory|Config")
+	FLinearColor GridLineColor;
 
 	UPROPERTY(BlueprintReadWrite, meta = (BindWidget, OptionalWidget = true), Category = "Grid Inventory|Widgets")
 	UCanvasPanel* GridCanvas;
@@ -80,9 +101,19 @@ public:
 	UFUNCTION(BlueprintNativeEvent, Category = "Grid Inventory|Widget")
 	UWidget* CreateItemVisual(const FInventoryItemInstance& Item);
 
+	/** Clear drag-hidden tracking after successful cross-inventory drop */
+	void ClearDragHiddenVisual();
+
+	/** Restore drag-hidden visual (for drag cancellation) */
+	void RestoreDragHiddenVisual();
+
+	/** Remove the manually-positioned drag visual from GridCanvas */
+	void RemoveDragVisual();
+
 protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
+	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 	// Grid-level mouse handling — all events are caught here, slots are visual-only
 	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
@@ -93,6 +124,7 @@ protected:
 	virtual bool NativeOnDrop(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation) override;
 	virtual bool NativeOnDragOver(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation) override;
 	virtual void NativeOnDragLeave(const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation) override;
+	virtual void NativeOnDragCancelled(const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation) override;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Grid Inventory|Widget")
 	UGridInventoryComponent* InventoryComponent;
@@ -101,16 +133,78 @@ private:
 	FIntPoint VisibleMin;
 	FIntPoint VisibleMax;
 
+	/** Active context menu widget (one at a time) */
+	UPROPERTY()
+	UInventoryContextMenuWidget* ActiveContextMenu;
+
 	/** Active slots keyed by "Y * 10000 + X" */
 	TMap<int64, UInventorySlotWidget*> ActiveSlots;
 	TArray<UInventorySlotWidget*> SlotPool;
-	TArray<UWidget*> ActiveItemVisuals;
+
+	/** Diff-based item visuals: keyed by UniqueID for incremental updates */
+	struct FItemVisualEntry
+	{
+		FGuid UniqueID;
+		FIntPoint Position;
+		FIntPoint Size;
+		int32 StackCount;
+		int32 ClassLevel;
+		bool bRotated;
+		bool bIconLoaded;
+		UWidget* Visual;
+
+		FItemVisualEntry() : StackCount(0), ClassLevel(0), bRotated(false), bIconLoaded(false), Visual(nullptr) {}
+	};
+	TMap<FGuid, FItemVisualEntry> ActiveItemVisuals;
+
+	/** Async icon preload: loaded textures cached by soft object path */
+	TMap<FSoftObjectPath, UTexture2D*> IconCache;
+	TSharedPtr<FStreamableHandle> IconStreamHandle;
+
+	TArray<UWidget*> GridLineWidgets;
 
 	// Grid-level mouse state
 	FIntPoint PendingDragCell;
 	FGuid PendingDragItemID;
+	bool bPendingDragCtrl;
+	bool bPendingDragAlt;
 	FIntPoint HoveredCell;
 	FGuid HoveredItemID;
+
+	/** Item ID whose visual is hidden during an active whole-stack drag */
+	FGuid DragHiddenItemID;
+
+	/** Manually-positioned drag visual on GridCanvas (bypasses DefaultDragVisual animation bug) */
+	UPROPERTY()
+	UWidget* ActiveDragVisual;
+
+	// Stack-split slider state
+	bool bShowingSplitSlider;
+	FGuid SplitSliderItemID;
+	int32 SplitSliderMaxCount;
+	int32 SplitSliderCurrentCount;
+	FIntPoint SplitSliderCell;
+	int32 PendingSplitCount;
+
+	// Pending drop-split state (Alt+drag workflow)
+	bool bPendingDropSplit;
+	FGuid DropSplitItemID;
+	FIntPoint DropSplitPosition;
+	bool DropSplitRotated;
+	UPROPERTY()
+	UGridInventoryComponent* DropSplitSourceInventory;
+
+	UPROPERTY()
+	UWidget* SplitSliderWidget;
+
+	UPROPERTY()
+	class UTextBlock* SplitSliderCountLabel;
+
+	UFUNCTION()
+	void OnSplitSliderValueChanged(float Value);
+
+	UFUNCTION()
+	void OnSplitSliderOKClicked();
 
 	int64 PosKey(int32 X, int32 Y) const { return (int64)Y * 10000 + X; }
 
@@ -125,6 +219,30 @@ private:
 	void RecycleSlots();
 	void RefreshVisibleItems();
 	void ClearItemVisuals();
+	void CreateGridLines();
+	void ClearGridLines();
+	void CloseContextMenu();
+	void ShowSplitSlider(const FInventoryItemInstance& Item, FIntPoint Cell);
+	void CloseSplitSlider();
+	void OnSplitSliderConfirmed(int32 Count);
+
+	/** Preload all visible item icons asynchronously via FStreamableManager */
+	void PreloadVisibleIcons();
+	/** Get a cached texture (returns nullptr if not yet loaded) */
+	UTexture2D* GetCachedIcon(const TSoftObjectPtr<UTexture2D>& SoftIcon) const;
+
+	/** Cached slot widget UClass — resolved from TSoftClassPtr on first use */
+	UPROPERTY()
+	UClass* ResolvedSlotWidgetClass;
+	UClass* GetSlotWidgetClass();
+
+	/** Cached grid line dimensions to avoid recreating unchanged lines */
+	int32 CachedGridLineWidth;
+	int32 CachedGridLineHeight;
+
+	/** Cached inventory dimensions — detect resize at runtime */
+	int32 CachedInventoryWidth;
+	int32 CachedInventoryHeight;
 
 	UFUNCTION()
 	void OnInventoryChanged();

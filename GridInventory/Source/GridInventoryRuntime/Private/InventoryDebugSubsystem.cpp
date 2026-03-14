@@ -98,7 +98,7 @@ void UInventoryDebugSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		&UInventoryDebugSubsystem::Cmd_SetMaxWeight);
 
 	RegisterCommand(TEXT("Inv.SetGridSize"),
-		TEXT("Inv.SetGridSize <Width> <Height> - Resize grid (clears items!)"),
+		TEXT("Inv.SetGridSize <Width> <Height> - Resize grid (preserves items, fails if they don't fit)"),
 		&UInventoryDebugSubsystem::Cmd_SetGridSize);
 
 	RegisterCommand(TEXT("Inv.Clear"),
@@ -167,6 +167,15 @@ void UInventoryDebugSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	RegisterCommand(TEXT("Inv.Container.Loot"),
 		TEXT("Inv.Container.Loot <Index> [Level] - Generate/regen loot"),
 		&UInventoryDebugSubsystem::Cmd_ContainerLoot);
+
+	// --- Gold ---
+	RegisterCommand(TEXT("Inv.Gold.Add"),
+		TEXT("Inv.Gold.Add <Amount> - Add/subtract gold (negative allowed)"),
+		&UInventoryDebugSubsystem::Cmd_GoldAdd);
+
+	RegisterCommand(TEXT("Inv.Gold.Set"),
+		TEXT("Inv.Gold.Set <Amount> - Set gold to exact value"),
+		&UInventoryDebugSubsystem::Cmd_GoldSet);
 
 #endif // !UE_BUILD_SHIPPING
 }
@@ -706,22 +715,25 @@ void UInventoryDebugSubsystem::Cmd_SetGridSize(const TArray<FString>& Args, UWor
 {
 	if (Args.Num() < 2)
 	{
-		DebugPrint(TEXT("Usage: Inv.SetGridSize <Width> <Height> (WARNING: clears items!)"));
+		DebugPrint(TEXT("Usage: Inv.SetGridSize <Width> <Height>"));
 		return;
 	}
 
 	UGridInventoryComponent* Inv = GetPlayerInventory(World);
 	if (!Inv) { DebugPrintError(TEXT("No inventory")); return; }
 
-	int32 W = FMath::Clamp(FCString::Atoi(*Args[0]), 1, 100);
-	int32 H = FMath::Clamp(FCString::Atoi(*Args[1]), 1, 100);
+	const int32 W = FCString::Atoi(*Args[0]);
+	const int32 H = FCString::Atoi(*Args[1]);
 
-	Inv->ClearInventory();
-	Inv->GridWidth = W;
-	Inv->GridHeight = H;
-	Inv->InitializeGrid();
-
-	DebugPrintWarning(FString::Printf(TEXT("Grid resized to %dx%d - inventory cleared!"), W, H));
+	if (Inv->ResizeGrid(W, H))
+	{
+		DebugPrint(FString::Printf(TEXT("Grid resized to %dx%d (%d items preserved)"),
+			Inv->GridWidth, Inv->GridHeight, Inv->GetAllItems().Num()));
+	}
+	else
+	{
+		DebugPrintError(FString::Printf(TEXT("Cannot resize to %dx%d — items would not fit!"), W, H));
+	}
 }
 
 void UInventoryDebugSubsystem::Cmd_Clear(const TArray<FString>& Args, UWorld* World)
@@ -1332,6 +1344,47 @@ void UInventoryDebugSubsystem::Cmd_ContainerLoot(const TArray<FString>& Args, UW
 	}
 
 	DebugPrintError(FString::Printf(TEXT("Container index %d not found"), TargetIndex));
+}
+
+// ============================================================================
+// Gold Commands
+// ============================================================================
+
+void UInventoryDebugSubsystem::Cmd_GoldAdd(const TArray<FString>& Args, UWorld* World)
+{
+	if (Args.Num() < 1)
+	{
+		DebugPrint(TEXT("Usage: Inv.Gold.Add <Amount>  (negative to subtract)"));
+		return;
+	}
+
+	UGridInventoryComponent* Inv = GetPlayerInventory(World);
+	if (!Inv) { DebugPrintError(TEXT("No inventory on player pawn")); return; }
+
+	const float Amount = FCString::Atof(*Args[0]);
+	const float Before = Inv->GetGold();
+	Inv->AddGold(Amount);
+	const float After = Inv->GetGold();
+
+	DebugPrint(FString::Printf(TEXT("Gold: %.0f → %.0f (%+.0f)"), Before, After, After - Before),
+		Amount >= 0.0f ? FColor::Yellow : FColor::Orange);
+}
+
+void UInventoryDebugSubsystem::Cmd_GoldSet(const TArray<FString>& Args, UWorld* World)
+{
+	if (Args.Num() < 1)
+	{
+		DebugPrint(TEXT("Usage: Inv.Gold.Set <Amount>"));
+		return;
+	}
+
+	UGridInventoryComponent* Inv = GetPlayerInventory(World);
+	if (!Inv) { DebugPrintError(TEXT("No inventory on player pawn")); return; }
+
+	const float Amount = FCString::Atof(*Args[0]);
+	Inv->SetGold(Amount);
+
+	DebugPrint(FString::Printf(TEXT("Gold set to: %.0f"), Inv->GetGold()), FColor::Yellow);
 }
 
 #endif // !UE_BUILD_SHIPPING
